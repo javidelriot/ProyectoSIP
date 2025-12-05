@@ -12,6 +12,8 @@ import mensajesSIP.RingingMessage;
 import mensajesSIP.SIPMessage;
 import mensajesSIP.ServiceUnavailableMessage;
 import mensajesSIP.TryingMessage;
+import mensajesSIP.BusyHereMessage;
+import mensajesSIP.RequestTimeoutMessage;
 
 public class ProxyTransactionLayer {
 
@@ -85,10 +87,27 @@ public class ProxyTransactionLayer {
             handleAck(ack);
             return;
         }
+        
+        // --- 486 Busy Here ---
+        if (sipMessage instanceof BusyHereMessage) {
+            BusyHereMessage busy = (BusyHereMessage) sipMessage;
+            userLayer.onBusyHereFromCallee(busy);
+            return;
+        }
+
+        // --- 408 Request Timeout ---
+        if (sipMessage instanceof RequestTimeoutMessage) {
+            RequestTimeoutMessage rt = (RequestTimeoutMessage) sipMessage;
+            userLayer.onRequestTimeoutFromCallee(rt);
+            return;
+        }
+
 
         System.err.println("[Proxy-TX] Mensaje inesperado de tipo "
                 + sipMessage.getClass().getSimpleName() + ", se ignora.");
     }
+    
+    
 
     // ================== LÓGICA DE INVITE ==================
 
@@ -187,6 +206,18 @@ public class ProxyTransactionLayer {
                               String address,
                               int port) throws IOException {
         transportLayer.send(inviteMessage, address, port);
+    }
+    
+    public void forwardBusyHere(BusyHereMessage busy,
+            String ip,
+            int port) throws IOException {
+    	transportLayer.send(busy, ip, port);
+    }
+
+    public void forwardRequestTimeout(RequestTimeoutMessage rt,
+                  String ip,
+                  int port) throws IOException {
+    	transportLayer.send(rt, ip, port);
     }
 
     public void sendInviteNotFound(InviteMessage inviteMessage,

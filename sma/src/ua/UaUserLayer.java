@@ -8,19 +8,34 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Scanner;
 import java.util.UUID;
+import java.util.Timer;
 
 import common.FindMyIPv4;
 
 import mensajesSIP.InviteMessage;
 import mensajesSIP.OKMessage;
-
+import mensajesSIP.NotFoundMessage;
 import mensajesSIP.RegisterMessage;
 import mensajesSIP.SDPMessage;
+import mensajesSIP.BusyHereMessage;
+import mensajesSIP.RequestTimeoutMessage;
+
 
 public class UaUserLayer {
-	private static final int IDLE = 0;
+	// Estados de alto nivel del UA
+	private static final int IDLE             = 0;
+	private static final int OUTGOING_CALL   = 1;
+	private static final int INCOMING_RINGING = 2;
+	private static final int IN_CALL         = 3;
+
 	private int state = IDLE;
-	
+
+	// INVITE entrante pendiente de decisión
+	private InviteMessage currentIncomingInvite;
+
+	// Timer para colgar por timeout si nadie descuelga
+	private Timer incomingCallTimer;
+
 	
 	private String usuarioSip;
 	private boolean debug;
@@ -150,24 +165,6 @@ throws SocketException, UnknownHostException {
 //	    // Más adelante aquí generaremos y enviaremos el ACK
 //	}
 
-	public void onInviteReceived(InviteMessage inviteMessage) throws IOException {
-	    System.out.println("Received INVITE from " + inviteMessage.getFromName());
-	    
-	    // Arrancamos servidor de vídeo
-	    //runVitextServer();
-
-	    // Construimos SDP para nuestra respuesta (somos el llamado)
-	    SDPMessage sdpMessage = new SDPMessage();
-	    sdpMessage.setIp(this.myAddress);
-	    sdpMessage.setPort(this.rtpPort);
-	    sdpMessage.setOptions(RTPFLOWS);
-
-	    // Contact donde podrán hablarnos
-	    String contact = myAddress + ":" + listenPort;
-
-	    // Pedimos a la TransactionLayer que construya y envíe un 200 OK
-	    transactionLayer.sendOkForInvite(inviteMessage, sdpMessage, contact);
-	}
 
 
 	public void startListeningNetwork() {
@@ -190,28 +187,55 @@ throws SocketException, UnknownHostException {
 	}
 
 	private void prompt() {
-		System.out.println("");
-		switch (state) {
-		case IDLE:
-			promptIdle();
-			break;
-		default:
-			throw new IllegalStateException("Unexpected state: " + state);
-		}
-		System.out.print("> ");
+	    System.out.println("");
+	    switch (state) {
+	    case IDLE:
+	    	System.out.println("INVITE xxx");
+	        break;
+	    case OUTGOING_CALL:
+	        System.out.println("Llamada saliente: esperando respuesta (Ringing / 200 OK / error)...");
+	        break;
+	    case INCOMING_RINGING:
+	        System.out.println("Llamada entrante. Comandos: ACCEPT | REJECT");
+	        break;
+	    case IN_CALL:
+	        //System.out.println("En llamada. (de momento sin comandos adicionales)");
+	        break;
+	    default:
+	        throw new IllegalStateException("Unexpected state: " + state);
+	    }
+	    System.out.print("> ");
 	}
 
-	private void promptIdle() {
-		System.out.println("INVITE xxx");
-	}
 
 	private void command(String line) throws IOException {
-		if (line.startsWith("INVITE")) {
-			commandInvite(line);
-		} else {
-			System.out.println("Bad command");
-		}
+	    String trimmed = line.trim();
+	    String upper   = trimmed.toUpperCase();
+
+	    if (state == IDLE) {
+	        if (upper.startsWith("INVITE")) {
+	            commandInvite(trimmed);
+	        } else {
+	            System.out.println("Bad command");
+	        }
+	        return;
+	    }
+
+	    if (state == INCOMING_RINGING) {
+	        if ("ACCEPT".equals(upper)) {
+	            acceptIncomingCall();
+	        } else if ("REJECT".equals(upper)) {
+	            rejectIncomingCall();
+	        } else {
+	            System.out.println("Comandos válidos mientras suena: ACCEPT | REJECT");
+	        }
+	        return;
+	    }
+
+	    // Para OUTGOING_CALL o IN_CALL, de momento no soportamos comandos
+	    System.out.println("Comando no válido en el estado actual.");
 	}
+
 	
 	// ¿Estoy registrado (y ya ha llegado 200 OK al REGISTER)?
 	public boolean isRegistered() {
@@ -283,6 +307,7 @@ throws SocketException, UnknownHostException {
 	    inviteMessage.setSdp(sdpMessage);
 
 	    transactionLayer.call(inviteMessage);
+	    state = OUTGOING_CALL;
 	}
 
 
@@ -298,24 +323,56 @@ throws SocketException, UnknownHostException {
 	
 	public void onRinging() {
 	    System.out.println("[UA] El destino está sonando (180 Ringing)");
+	    //Seguimos en OUTGOING_CALL
 	}
 
 	public void onInviteOKFromCallee(OKMessage ok) {
 	    System.out.println("[UA] Llamada establecida (200 OK). ACK enviado.");
+	    state = IN_CALL;
 	}
 	
-//	public void onInviteReceived(InviteMessage inv) {
-//	    System.out.println("[UA] Me están llamando desde: " + inv.getFromUri());
-//	    // Aquí ya puedes mostrar popup, aceptar automáticamente o pedir al usuario
-//	}
+	public void onInviteReceived(InviteMessage inv) {
+	    //System.out.println("[UA] Me están llamando desde: " + inv.getFromUri());
+	    // Arrancamos servidor de vídeo
+	    //runVitextServer();
+	    // Guardamos el INVITE para poder contestar después
+	    this.currentIncomingInvite = inv;
+	    this.state = INCOMING_RINGING;
+
+	    // Cancelamos posible timer anterior
+	    if (incomingCallTimer != null) {
+	        incomingCallTimer.cancel();
+	    }
+
+	    // Creamos un timer para mandar 408 si nadie contesta en 10 s
+	    incomingCallTimer = new java.util.Timer(true);
+	    incomingCallTimer.schedule(new java.util.TimerTask() {
+	        @Override
+	        public void run() {
+	            try {
+	                // Solo si seguimos en estado "sonando" y no se ha decidido
+	                if (state == INCOMING_RINGING && currentIncomingInvite != null) {
+	                    System.out.println("[UA] Nadie descuelga → enviando 408 Request Timeout");
+	                    transactionLayer.sendRequestTimeoutForInvite(currentIncomingInvite);
+	                    currentIncomingInvite = null;
+	                    state = IDLE;
+	                }
+	            } catch (IOException e) {
+	                e.printStackTrace();
+	            }
+	        }
+	    }, 10_000); // 10 segundos
+	}
+
 
 	public void onAckReceived() {
 	    System.out.println("[UA] ACK recibido → llamada establecida.");
+	    state = IN_CALL;
 	}
 
 	public void onInviteError() {
 	    System.out.println("[UA] Error en llamada: ");
-
+	    state = IDLE;
 	}
 	
 	//private void runVitextClient() throws IOException {
@@ -337,5 +394,75 @@ throws SocketException, UnknownHostException {
 			vitextServer.destroy();
 		}
 	}
+	
+	public void onBusyHereFromCallee(BusyHereMessage busy) {
+	    System.out.println("[UA] Llamada rechazada por el destino (486 Busy Here).");
+
+	    // Aquí puedes añadir lógica extra si quieres:
+	    // - limpiar estado de llamada saliente
+	    // - mostrar info del usuario que ha rechazado: busy.getToUri() / getFromUri()
+	    // - parar timers de INVITE si los tuvieras
+
+	    state = IDLE;
+	}
+
+	public void onRequestTimeoutFromCallee(RequestTimeoutMessage rt) {
+	    System.out.println("[UA] Llamada no contestada (408 Request Timeout).");
+
+	    // Igual que arriba, aquí podrías limpiar recursos de la llamada saliente
+
+	    state = IDLE;
+	}
+
+	private void acceptIncomingCall() throws IOException {
+	    if (currentIncomingInvite == null) {
+	        System.out.println("No hay llamada entrante que aceptar.");
+	        return;
+	    }
+
+	    // Cancelar timer de timeout
+	    if (incomingCallTimer != null) {
+	        incomingCallTimer.cancel();
+	        incomingCallTimer = null;
+	    }
+
+	    // Construimos SDP para nuestra respuesta (somos el llamado)
+	    SDPMessage sdpMessage = new SDPMessage();
+	    sdpMessage.setIp(this.myAddress);
+	    sdpMessage.setPort(this.rtpPort);
+	    sdpMessage.setOptions(RTPFLOWS);
+
+	    String contact = myAddress + ":" + listenPort;
+	    
+	    System.out.println(currentIncomingInvite.getFromUri());
+	    // Enviar 200 OK a través de la transaction layer
+	    transactionLayer.sendOkForInvite(currentIncomingInvite, sdpMessage, contact);
+
+	    System.out.println("[UA] Llamada aceptada → enviado 200 OK.");
+	    // Si quieres arrancar vitext al aceptar:
+	    // runVitextServer();
+
+	    state = IN_CALL;
+	}
+
+	private void rejectIncomingCall() throws IOException {
+	    if (currentIncomingInvite == null) {
+	        System.out.println("No hay llamada entrante que rechazar.");
+	        return;
+	    }
+
+	    // Cancelar timer de timeout
+	    if (incomingCallTimer != null) {
+	        incomingCallTimer.cancel();
+	        incomingCallTimer = null;
+	    }
+
+	    System.out.println("[UA] Llamada rechazada → enviando 486 Busy Here");
+	    transactionLayer.sendBusyForInvite(currentIncomingInvite);
+
+	    currentIncomingInvite = null;
+	    state = IDLE;
+	}
+
 
 }

@@ -20,6 +20,8 @@ import mensajesSIP.NotFoundMessage;
 import mensajesSIP.TryingMessage;
 import mensajesSIP.RingingMessage;
 import mensajesSIP.SIPMessage;
+import mensajesSIP.BusyHereMessage;
+import mensajesSIP.RequestTimeoutMessage;
 
 
 public class UaTransactionLayer {
@@ -27,8 +29,8 @@ public class UaTransactionLayer {
 	private int state = IDLE;
 	
 	// Tablas de transacciones
-	private Map<String, InviteClientTransaction> clientTxs = new HashMap<>();
-	private Map<String, InviteServerTransaction> serverTxs = new HashMap<>();
+	private Map<String, InviteClientTransaction> clientTxs = new HashMap<>(); //Transacción invite del cliente que llama
+	private Map<String, InviteServerTransaction> serverTxs = new HashMap<>(); //Transacción invite del cliente llamado
 
 	// Último INVITE enviado (para ACK)
 	private InviteMessage lastInviteSent;
@@ -82,6 +84,16 @@ public class UaTransactionLayer {
 	        handleInviteError((NotFoundMessage) sipMessage);
 	        return;
 	    }
+	    
+	    if(sipMessage instanceof BusyHereMessage) { //Va a ver que aplicar logica extra cuando se implemente el usuario ocupado por estar en llamada
+	    	userLayer.onBusyHereFromCallee((BusyHereMessage) sipMessage);
+	    	return;
+	    }
+	    
+	    if(sipMessage instanceof RequestTimeoutMessage) { 
+	    	userLayer.onRequestTimeoutFromCallee((RequestTimeoutMessage) sipMessage);
+	    	return;
+	    }
 
 	    // ----------- MANEJO DE INVITE COMO SERVIDOR (me llaman) -----------
 
@@ -96,51 +108,7 @@ public class UaTransactionLayer {
 	    }
 
 	    System.out.println("[UA-TX] Mensaje inesperado: ");
-		/*
-		 * // 1) --- RESPUESTAS AL REGISTER ---
-		 * 
-		 * // 200 OK if (sipMessage instanceof OKMessage) { OKMessage ok = (OKMessage)
-		 * sipMessage;
-		 * 
-		 * // Miramos el método del CSeq: REGISTER, INVITE, BYE... String cseqMethod =
-		 * ok.getcSeqStr(); if ("REGISTER".equalsIgnoreCase(cseqMethod)) { // Es un 200
-		 * OK a nuestro REGISTER userLayer.onRegisterOK(); return; // ya está manejado,
-		 * no seguimos }
-		 * 
-		 * if ("INVITE".equalsIgnoreCase(cseqMethod)) { // 👉 Nuevo: es un 200 OK a
-		 * nuestro INVITE handleInviteOK(ok); return; }
-		 * 
-		 * // Si no es REGISTER, más adelante lo tratarás como 200 OK a INVITE/BYE //if
-		 * ("INVITE".equalsIgnoreCase(cseqMethod)) { // Es un 200 OK al INVITE //
-		 * userLayer.onInviteOKReceived(ok); // return; // ya está manejado, no seguimos
-		 * //}
-		 * 
-		 * }
-		 * 
-		 * // 404 Not Found if (sipMessage instanceof NotFoundMessage) { NotFoundMessage
-		 * nf = (NotFoundMessage) sipMessage;
-		 * 
-		 * String cseqMethod = nf.getcSeqStr(); if
-		 * ("REGISTER".equalsIgnoreCase(cseqMethod)) { // Es un 404 al REGISTER (usuario
-		 * no permitido) userLayer.onRegisterNotFound(); return; }
-		 * 
-		 * // Si no es REGISTER, será un 404 a una llamada (lo harás después) }
-		 * 
-		 * // 2) --- MENSAJES INVITE (lo que ya tenías) ---
-		 * 
-		 * if (sipMessage instanceof InviteMessage) { InviteMessage inviteMessage =
-		 * (InviteMessage) sipMessage;
-		 * 
-		 * switch (state) { case IDLE: // Estamos fuera de llamada: una nueva INVITE
-		 * entrante userLayer.onInviteReceived(inviteMessage); break;
-		 * 
-		 * default: System.err.println("Unexpected INVITE message in state " + state +
-		 * ", throwing away"); break; } } else { // De momento, cualquier otra cosa que
-		 * no sea REGISTER resp. o INVITE la ignoramos
-		 * System.err.println("Unexpected message type (" +
-		 * sipMessage.getClass().getSimpleName() + "), throwing away"); }
-		 */
-	}
+	}	
 	
 	private void handleTrying(TryingMessage trying) {
 	    String callId = trying.getCallId();
@@ -230,31 +198,7 @@ public class UaTransactionLayer {
 	
 	
 
-	public void sendOkForInvite(InviteMessage inviteMessage, SDPMessage sdpMessage, String contact) throws IOException {
 
-		OKMessage ok = new OKMessage();
-
-		// Reutilizamos las mismas Vias del INVITE
-		ok.setVias(inviteMessage.getVias());
-
-		// To / From: mismo esquema que el INVITE
-		ok.setToName(inviteMessage.getToName());
-		ok.setToUri(inviteMessage.getToUri());
-		ok.setFromName(inviteMessage.getFromName());
-		ok.setFromUri(inviteMessage.getFromUri());
-
-		ok.setCallId(inviteMessage.getCallId());
-		ok.setcSeqNumber(inviteMessage.getcSeqNumber());
-		ok.setcSeqStr(inviteMessage.getcSeqStr()); // "INVITE"
-
-		ok.setContact(contact);
-
-		//ok.setContentType("application/sdp");
-		ok.setContentLength(sdpMessage.toStringMessage().getBytes().length);
-		ok.setSdp(sdpMessage);
-
-		transportLayer.sendToProxy(ok);
-	}
 	
 	private void handleInviteError(NotFoundMessage nf) {
 	    String callId = nf.getCallId();
@@ -353,7 +297,67 @@ public class UaTransactionLayer {
 	    transportLayer.sendToProxy(inviteMessage);
 	}
 
+	public void sendBusyForInvite(InviteMessage invite) throws IOException {
+	    BusyHereMessage busy = new BusyHereMessage();
+
+	    // Reutilizamos Vias y cabeceras del INVITE
+	    busy.setVias(invite.getVias());
+	    busy.setToName(invite.getToName());
+	    busy.setToUri(invite.getToUri());
+	    busy.setFromName(invite.getFromName());
+	    busy.setFromUri(invite.getFromUri());
+	    busy.setCallId(invite.getCallId());
+	    busy.setcSeqNumber(invite.getcSeqNumber());
+	    busy.setcSeqStr(invite.getcSeqStr()); // "INVITE"
+
+	    busy.setContentLength(0);
+
+	    transportLayer.sendToProxy(busy);
+	}
+
+	public void sendRequestTimeoutForInvite(InviteMessage invite) throws IOException {
+	    RequestTimeoutMessage rt = new RequestTimeoutMessage();
+
+	    rt.setVias(invite.getVias());
+	    rt.setToName(invite.getToName());
+	    rt.setToUri(invite.getToUri());
+	    rt.setFromName(invite.getFromName());
+	    rt.setFromUri(invite.getFromUri());
+	    rt.setCallId(invite.getCallId());
+	    rt.setcSeqNumber(invite.getcSeqNumber());
+	    rt.setcSeqStr(invite.getcSeqStr()); // "INVITE"
+
+	    rt.setContentLength(0);
+
+	    transportLayer.sendToProxy(rt);
+	}
 	
+	public void sendOkForInvite(InviteMessage inviteMessage, SDPMessage sdpMessage, String contact) throws IOException {
+
+		OKMessage ok = new OKMessage();
+
+		// Reutilizamos las mismas Vias del INVITE
+		ok.setVias(inviteMessage.getVias());
+
+		// To / From: mismo esquema que el INVITE
+		ok.setToName(inviteMessage.getToName());
+		ok.setToUri(inviteMessage.getToUri());
+		ok.setFromName(inviteMessage.getFromName());
+		ok.setFromUri(inviteMessage.getFromUri());
+
+		ok.setCallId(inviteMessage.getCallId());
+		ok.setcSeqNumber(inviteMessage.getcSeqNumber());
+		ok.setcSeqStr(inviteMessage.getcSeqStr()); // "INVITE"
+
+		ok.setContact(contact);
+
+		//ok.setContentType("application/sdp");
+		ok.setContentLength(sdpMessage.toStringMessage().getBytes().length);
+		ok.setSdp(sdpMessage);
+
+		transportLayer.sendToProxy(ok);
+	}
+
 	
 	
 	

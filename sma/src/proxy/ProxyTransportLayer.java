@@ -23,10 +23,10 @@ public class ProxyTransportLayer {
 	}
 
 	public void send(SIPMessage sipMessage, String address, int port) throws IOException {
-		send(sipMessage.toStringMessage().getBytes(), address, port);
+		send_socket(sipMessage.toStringMessage().getBytes(), address, port);
 	}
 
-	private void send(byte[] bytes, String address, int port) throws IOException {
+	private void send_socket(byte[] bytes, String address, int port) throws IOException {
 		InetAddress inetAddress = InetAddress.getByName(address);
 		DatagramPacket packet = new DatagramPacket(bytes, bytes.length, inetAddress, port);
 		socket.send(packet);

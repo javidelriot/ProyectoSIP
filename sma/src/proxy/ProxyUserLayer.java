@@ -16,7 +16,8 @@ import mensajesSIP.RingingMessage;
 import mensajesSIP.ACKMessage;
 import mensajesSIP.OKMessage;
 import mensajesSIP.NotFoundMessage;
-
+import mensajesSIP.BusyHereMessage;
+import mensajesSIP.RequestTimeoutMessage;
 import java.io.InputStream;
 
 import javax.xml.bind.JAXBContext;
@@ -100,7 +101,7 @@ public class ProxyUserLayer {
 	public void onInviteOKFromCallee(OKMessage ok) throws IOException {
 
 	    // El llamante es quien aparece en To del 200 OK
-	    String callerUri = ok.getToUri();
+	    String callerUri = ok.getFromUri();
 	    RegistrationInfo callerReg = getValidRegistration(callerUri);
 
 	    if (callerReg == null) return;
@@ -127,6 +128,49 @@ public class ProxyUserLayer {
 	    System.out.println("[Proxy] Reenviando ACK al callee");
 	    transactionLayer.forwardAck(ack, ip, port);
 	}
+
+	
+	
+    public void onBusyHereFromCallee(BusyHereMessage busy) throws IOException {
+
+        // En las respuestas, el From suele ser el caller original
+        String callerUri = busy.getFromUri();
+        RegistrationInfo callerReg = getValidRegistration(callerUri);
+
+        if (callerReg == null) {
+            System.out.println("[Proxy] 486 Busy Here: caller no registrado, se descarta.");
+            return;
+        }
+
+        String[] parts = callerReg.contact.split(":");
+        String ip   = parts[0];
+        int    port = Integer.parseInt(parts[1]);
+
+        System.out.println("[Proxy] Reenviando 486 Busy Here al llamante " 
+                           + callerUri + " en " + ip + ":" + port);
+
+        transactionLayer.forwardBusyHere(busy, ip, port);
+    }
+    
+    public void onRequestTimeoutFromCallee(RequestTimeoutMessage rt) throws IOException {
+
+        String callerUri = rt.getFromUri();
+        RegistrationInfo callerReg = getValidRegistration(callerUri);
+
+        if (callerReg == null) {
+            System.out.println("[Proxy] 408 Request Timeout: caller no registrado, se descarta.");
+            return;
+        }
+
+        String[] parts = callerReg.contact.split(":");
+        String ip   = parts[0];
+        int    port = Integer.parseInt(parts[1]);
+
+        System.out.println("[Proxy] Reenviando 408 Request Timeout al llamante "
+                           + callerUri + " en " + ip + ":" + port);
+
+        transactionLayer.forwardRequestTimeout(rt, ip, port);
+    }
 
 
 
