@@ -41,12 +41,18 @@ public class ProxyTransportLayer {
 				socket.receive(packet);
 				String msg = new String(packet.getData());
 				SIPMessage sipMessage = SIPMessage.parseMessage(msg);
-				transactionLayer.onMessageReceived(sipMessage);
+				
+				String sourceIp   = packet.getAddress().getHostAddress();
+                int    sourcePort = packet.getPort();
+
+                transactionLayer.onMessageReceived(sipMessage, sourceIp, sourcePort);
 			} catch (Exception e) {
 				System.err.println(e.getMessage());
 				e.printStackTrace();
 			}
 		}
 	}
+	
+	
 
 }

@@ -1,5 +1,6 @@
 package ua;
 
+
 import java.io.IOException;
 import java.net.SocketException;
 import java.net.UnknownHostException;
@@ -9,9 +10,12 @@ import java.util.Scanner;
 import java.util.UUID;
 
 import common.FindMyIPv4;
+
 import mensajesSIP.InviteMessage;
-import mensajesSIP.SDPMessage;
+import mensajesSIP.OKMessage;
+
 import mensajesSIP.RegisterMessage;
+import mensajesSIP.SDPMessage;
 
 public class UaUserLayer {
 	private static final int IDLE = 0;
@@ -42,21 +46,21 @@ public class UaUserLayer {
             int proxyPort,
             boolean debug,
             int tiempoRegistro)
- throws SocketException, UnknownHostException {
+throws SocketException, UnknownHostException {
 
-this.usuarioSip     = usuarioSip;
-this.listenPort     = listenPort;
-this.rtpPort        = listenPort + 1;
-this.debug          = debug;
-this.tiempoRegistro = tiempoRegistro;
+		this.usuarioSip     = usuarioSip;
+		this.listenPort     = listenPort;
+		this.rtpPort        = listenPort + 1;
+		this.debug          = debug;
+		this.tiempoRegistro = tiempoRegistro;
 
-this.transactionLayer = new UaTransactionLayer(
-     listenPort,
-     proxyAddress,
-     proxyPort,
-     this
-);
-}
+		this.transactionLayer = new UaTransactionLayer(
+				listenPort,
+				proxyAddress,
+				proxyPort,
+				this
+				);
+	}
 
 
 	public void startRegistration() {
@@ -140,11 +144,31 @@ this.transactionLayer = new UaTransactionLayer(
 	}
 
 	
-	
+//	public void onInviteOKReceived(OKMessage okMessage) {
+//	    System.out.println("Recibido 200 OK a INVITE desde " + okMessage.getToUri());
+//	    //System.out.println("Llamada establecida (versión simple, sin ACK aún).");
+//	    // Más adelante aquí generaremos y enviaremos el ACK
+//	}
+
 	public void onInviteReceived(InviteMessage inviteMessage) throws IOException {
-		System.out.println("Received INVITE from " + inviteMessage.getFromName());
-		runVitextServer();
+	    System.out.println("Received INVITE from " + inviteMessage.getFromName());
+	    
+	    // Arrancamos servidor de vídeo
+	    //runVitextServer();
+
+	    // Construimos SDP para nuestra respuesta (somos el llamado)
+	    SDPMessage sdpMessage = new SDPMessage();
+	    sdpMessage.setIp(this.myAddress);
+	    sdpMessage.setPort(this.rtpPort);
+	    sdpMessage.setOptions(RTPFLOWS);
+
+	    // Contact donde podrán hablarnos
+	    String contact = myAddress + ":" + listenPort;
+
+	    // Pedimos a la TransactionLayer que construya y envíe un 200 OK
+	    transactionLayer.sendOkForInvite(inviteMessage, sdpMessage, contact);
 	}
+
 
 	public void startListeningNetwork() {
 		transactionLayer.startListeningNetwork();
@@ -188,40 +212,79 @@ this.transactionLayer = new UaTransactionLayer(
 			System.out.println("Bad command");
 		}
 	}
+	
+	// ¿Estoy registrado (y ya ha llegado 200 OK al REGISTER)?
+	public boolean isRegistered() {
+	    return registered;
+	}
 
 	private void commandInvite(String line) throws IOException {
-		stopVitextServer();
-		stopVitextClient();
-		
-		System.out.println("Inviting...");
+	    if (!isRegistered()) {
+	        System.out.println("No puedes hacer INVITE: el UA aún no está registrado.");
+	        return;
+	    }
 
-		runVitextClient();
+	    stopVitextServer();
+	    stopVitextClient();
 
-		String callId = UUID.randomUUID().toString();
+	    // Ejemplo de línea: "INVITE bob"
+	    String[] parts = line.split("\\s+");
+	    if (parts.length < 2) {
+	        System.out.println("Uso: INVITE nombreDestino");
+	        return;
+	    }
 
-		SDPMessage sdpMessage = new SDPMessage();
-		sdpMessage.setIp(this.myAddress);
-		sdpMessage.setPort(this.rtpPort);
-		sdpMessage.setOptions(RTPFLOWS);
+	    String destName = parts[1];   // "bob"
+	    
+	    // usuarioSip viene de args[0] en UA.java, por ej. "alice@SMA"
+	    String[] userParts = usuarioSip.split("@");
+	    String myUser   = userParts[0];
+	    String myDomain = (userParts.length > 1) ? userParts[1] : "SMA";
 
-		InviteMessage inviteMessage = new InviteMessage();
-		inviteMessage.setDestination("sip:bob@SMA");
-		inviteMessage.setVias(new ArrayList<String>(Arrays.asList(this.myAddress + ":" + this.listenPort)));
-		inviteMessage.setMaxForwards(70);
-		inviteMessage.setToName("Bob");
-		inviteMessage.setToUri("sip:bob@SMA");
-		inviteMessage.setFromName("Alice");
-		inviteMessage.setFromUri("sip:alice@SMA");
-		inviteMessage.setCallId(callId);
-		inviteMessage.setcSeqNumber("1");
-		inviteMessage.setcSeqStr("INVITE");
-		inviteMessage.setContact(myAddress + ":" + listenPort);
-		inviteMessage.setContentType("application/sdp");
-		inviteMessage.setContentLength(sdpMessage.toStringMessage().getBytes().length);
-		inviteMessage.setSdp(sdpMessage);
+	    // Construimos URIs SIP
+	    String fromUri = "sip:" + myUser + "@" + myDomain; //El domain es el mismo para ambos
+	    String toUri   = "sip:" + destName + "@" + myDomain;
 
-		transactionLayer.call(inviteMessage);
+	    System.out.println("Inviting " + toUri);
+
+	    //runVitextClient(); // cliente de vídeo
+
+	    String callId = UUID.randomUUID().toString();
+
+	    // SDP con nuestra IP y puerto RTP
+	    SDPMessage sdpMessage = new SDPMessage();
+	    sdpMessage.setIp(this.myAddress);
+	    sdpMessage.setPort(this.rtpPort);
+	    sdpMessage.setOptions(RTPFLOWS);
+
+	    InviteMessage inviteMessage = new InviteMessage();
+	    inviteMessage.setDestination(toUri);
+	    inviteMessage.setVias(new ArrayList<String>(
+	            Arrays.asList(this.myAddress + ":" + this.listenPort)));
+	    inviteMessage.setMaxForwards(70);
+
+	    // Cabeceras To / From coherentes con nuestro usuario y el destino
+	    inviteMessage.setToName(destName);
+	    inviteMessage.setToUri(toUri);
+	    inviteMessage.setFromName(myUser);
+	    inviteMessage.setFromUri(fromUri);
+
+	    inviteMessage.setCallId(callId);
+	    inviteMessage.setcSeqNumber("1");
+	    inviteMessage.setcSeqStr("INVITE");
+
+	    // Contact: dónde nos puede contactar el otro extremo
+	    inviteMessage.setContact(myAddress + ":" + listenPort);
+
+	    // Cuerpo SDP
+	    inviteMessage.setContentType("application/sdp");
+	    inviteMessage.setContentLength(
+	            sdpMessage.toStringMessage().getBytes().length);
+	    inviteMessage.setSdp(sdpMessage);
+
+	    transactionLayer.call(inviteMessage);
 	}
+
 
 	public void onRegisterOK() {
 	    this.registered = true;
@@ -233,9 +296,31 @@ this.transactionLayer = new UaTransactionLayer(
 	    System.exit(0);
 	}
 	
-	private void runVitextClient() throws IOException {
-		vitextClient = Runtime.getRuntime().exec("xterm -e vitext/vitextclient -p 5000 239.1.2.3");
+	public void onRinging() {
+	    System.out.println("[UA] El destino está sonando (180 Ringing)");
 	}
+
+	public void onInviteOKFromCallee(OKMessage ok) {
+	    System.out.println("[UA] Llamada establecida (200 OK). ACK enviado.");
+	}
+	
+//	public void onInviteReceived(InviteMessage inv) {
+//	    System.out.println("[UA] Me están llamando desde: " + inv.getFromUri());
+//	    // Aquí ya puedes mostrar popup, aceptar automáticamente o pedir al usuario
+//	}
+
+	public void onAckReceived() {
+	    System.out.println("[UA] ACK recibido → llamada establecida.");
+	}
+
+	public void onInviteError() {
+	    System.out.println("[UA] Error en llamada: ");
+
+	}
+	
+	//private void runVitextClient() throws IOException {
+//		vitextClient = Runtime.getRuntime().exec("xterm -e vitext/vitextclient -p 5000 239.1.2.3");
+//	}
 
 	private void stopVitextClient() {
 		if (vitextClient != null) {
@@ -243,9 +328,9 @@ this.transactionLayer = new UaTransactionLayer(
 		}
 	}
 
-	private void runVitextServer() throws IOException {
-		vitextServer = Runtime.getRuntime().exec("xterm -iconic -e vitext/vitextserver -r 10 -p 5000 vitext/1.vtx 239.1.2.3");
-	}
+//	private void runVitextServer() throws IOException {
+//		vitextServer = Runtime.getRuntime().exec("xterm -iconic -e vitext/vitextserver -r 10 -p 5000 vitext/1.vtx 239.1.2.3");
+//	}
 
 	private void stopVitextServer() {
 		if (vitextServer != null) {
