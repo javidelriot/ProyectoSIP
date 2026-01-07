@@ -2,32 +2,42 @@ package proxy;
 
 import java.io.IOException;
 import java.net.SocketException;
-import java.util.ArrayList;
+import java.net.UnknownHostException;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.List;
-import sipServlet.User;
-import sipServlet.Users;
-import sipServlet.UsersServletReader;
-import mensajesSIP.InviteMessage;
-import mensajesSIP.RegisterMessage;
 import common.FindMyIPv4;
-import mensajesSIP.RingingMessage;
 import mensajesSIP.ACKMessage;
-import mensajesSIP.OKMessage;
-import mensajesSIP.NotFoundMessage;
 import mensajesSIP.BusyHereMessage;
+import mensajesSIP.ByeMessage;
+import mensajesSIP.InviteMessage;
+import mensajesSIP.OKMessage;
+import mensajesSIP.RegisterMessage;
 import mensajesSIP.RequestTimeoutMessage;
-import java.io.InputStream;
+import mensajesSIP.RingingMessage;
+import mensajesSIP.NotFoundMessage;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 
-import javax.xml.bind.JAXBContext;
-import javax.xml.bind.Unmarshaller;
-
+/**
+ * Lógica de “usuario” del proxy:
+ *  - mantiene la tabla de registros (REGISTER)
+ *  - decide a qué UA hay que reenviar cada mensaje
+ */
 public class ProxyUserLayer {
-	private ProxyTransactionLayer transactionLayer;
-	private String proxyIp;
-	private int    proxyPort;
-	//private String myAddress = FindMyIPv4.findMyIPv4Address().getHostAddress();
+
+	// Lista de usuarios permitidos (URIs completas)
+	private static final Set<String> ALLOWED_USERS = new HashSet<>(Arrays.asList(
+	        "sip:alice@SMA",
+	        "sip:bob@SMA",
+	        "sip:charlie@SMA"
+	));
+
+
+    private final boolean looseRouting;
+    private String proxyIp;
+    private int proxyPort;
+
 
     // Info de registro de un usuario
     private static class RegistrationInfo {
@@ -36,104 +46,186 @@ public class ProxyUserLayer {
     }
 
     // Tabla: "sip:usuario@dominio" -> RegistrationInfo
+    private ProxyTransactionLayer transactionLayer;
     private Map<String, RegistrationInfo> registrations = new HashMap<>();
 
-    public ProxyUserLayer(int listenPort) throws SocketException {
-        this.transactionLayer = new ProxyTransactionLayer(listenPort, this);
-        //this.proxyIp   = FindMyIPv4.findMyIPv4Address().getHostAddress();
-        this.proxyPort = listenPort;
+    public ProxyUserLayer(int listenPort, boolean looseRouting)
+            throws SocketException, UnknownHostException {
+    	this.looseRouting = looseRouting;
+        this.proxyPort    = listenPort;
+        this.proxyIp      = FindMyIPv4.findMyIPv4Address().getHostAddress();
+
+        this.transactionLayer = new ProxyTransactionLayer(listenPort, this, looseRouting);
     }
 
-	
-	public void onInviteReceived(InviteMessage inviteMessage, String sourceIp, int sourcePort) throws IOException {
+    // ===================== INVITE / RUTA PRINCIPAL =====================
 
-	    String callerUri = inviteMessage.getFromUri();
-	    String calleeUri = inviteMessage.getToUri();
+    public void onInviteReceived(InviteMessage inviteMessage,
+                                 String sourceIp,
+                                 int sourcePort) throws IOException {
 
-	    RegistrationInfo callerReg = getValidRegistration(callerUri);
-	    RegistrationInfo calleeReg = getValidRegistration(calleeUri);
+        String callerUri = inviteMessage.getFromUri();
+        String calleeUri = inviteMessage.getToUri();
 
-	    if (callerReg == null) {
-	        System.out.println("[Proxy] Caller NO registrado → ignorando INVITE.");
-	        return;
-	    }
+        RegistrationInfo callerReg = getValidRegistration(callerUri);
+        RegistrationInfo calleeReg = getValidRegistration(calleeUri);
 
-	    if (calleeReg == null) {
-	        System.out.println("[Proxy] Callee NO registrado → enviando 404");
-	        transactionLayer.sendInviteNotFound(inviteMessage, callerReg.contact);
-	        return;
-	    }
+        if (callerReg == null) {
+            System.out.println("[Proxy] Caller NO registrado → ignorando INVITE.");
+            return;
+        }
 
-	    // 1) Enviar 100 Trying al llamante (usamos la IP:puerto desde donde llegó)
-	    System.out.println("[Proxy] Enviando 100 Trying al llamante");
-	    transactionLayer.sendTrying(inviteMessage, sourceIp, sourcePort);
+        if (calleeReg == null) {
+            System.out.println("[Proxy] Callee NO registrado → enviando 404");
+            transactionLayer.sendInviteNotFound(inviteMessage, callerReg.contact);
+            return;
+        }
 
-	    // 2) Obtener dirección real del callee a partir de la tabla REGISTER
-	    String[] parts = calleeReg.contact.split(":");
-	    String destIp = parts[0];
-	    int destPort = Integer.parseInt(parts[1]);
+        // 1) Enviar 100 Trying al llamante (IP/puerto de donde vino el INVITE)
+        System.out.println("[Proxy] Enviando 100 Trying al llamante");
+        transactionLayer.sendTrying(inviteMessage, sourceIp, sourcePort);
 
-	    // 3) Añadir Via del proxy arriba
-	    inviteMessage.getVias().add(0, destIp + ":" + proxyPort);
+        // 2) Dirección real del callee a partir del REGISTER
+        String[] parts = calleeReg.contact.split(":");
+        String destIp   = parts[0];
+        int    destPort = Integer.parseInt(parts[1]);
 
-	    // 4) Reenviar el INVITE al UA llamado
-	    System.out.println("[Proxy] Reenviando INVITE al callee " + calleeUri + " en " + destIp + ":" + destPort);
-	    transactionLayer.forwardInvite(inviteMessage, destIp, destPort);
-	}
+        // 3) Añadir Via del proxy arriba
+        inviteMessage.getVias().add(0, proxyIp + ":" + proxyPort);
 
-	
-	public void onRingingFromCallee(RingingMessage ringing) throws IOException {
+        // 4) Si hay loose routing, añadimos Record-Route con la dirección del proxy
+        if (looseRouting) {
+            inviteMessage.setRecordRoute(proxyIp + ":" + proxyPort);
+        }
 
-	    String callerUri = ringing.getFromUri();
-	    RegistrationInfo callerReg = getValidRegistration(callerUri);
+        // 5) Reenviar el INVITE al UA llamado
+        System.out.println("[Proxy] Reenviando INVITE al callee " +
+                calleeUri + " en " + destIp + ":" + destPort);
+        transactionLayer.forwardInvite(inviteMessage, destIp, destPort);
+    }
 
-	    if (callerReg == null) return;
+    public void onRingingFromCallee(RingingMessage ringing) throws IOException {
 
-	    String[] parts = callerReg.contact.split(":");
-	    String ip = parts[0];
-	    int port = Integer.parseInt(parts[1]);
+        String callerUri = ringing.getFromUri();
+        RegistrationInfo callerReg = getValidRegistration(callerUri);
 
-	    System.out.println("[Proxy] Reenviando 180 Ringing al llamante");
+        if (callerReg == null) return;
 
-	    transactionLayer.forwardRinging(ringing, ip, port);
-	}
-	
-	public void onInviteOKFromCallee(OKMessage ok) throws IOException {
+        String[] parts = callerReg.contact.split(":");
+        String ip   = parts[0];
+        int    port = Integer.parseInt(parts[1]);
 
-	    // El llamante es quien aparece en To del 200 OK
-	    String callerUri = ok.getFromUri();
-	    RegistrationInfo callerReg = getValidRegistration(callerUri);
+        System.out.println("[Proxy] Reenviando 180 Ringing al llamante");
+        transactionLayer.forwardRinging(ringing, ip, port);
+    }
 
-	    if (callerReg == null) return;
+    public void onInviteOKFromCallee(OKMessage ok) throws IOException {
 
-	    String[] parts = callerReg.contact.split(":");
-	    String ip = parts[0];
-	    int port = Integer.parseInt(parts[1]);
+        // El llamante aparece en From del 200 OK
+        String callerUri = ok.getFromUri();
+        RegistrationInfo callerReg = getValidRegistration(callerUri);
 
-	    System.out.println("[Proxy] Reenviando 200 OK al llamante");
-	    transactionLayer.forwardInviteOk(ok, ip, port);
-	}
+        if (callerReg == null) return;
 
-	public void onAckFromCaller(ACKMessage ack) throws IOException {
+        String[] parts = callerReg.contact.split(":");
+        String ip   = parts[0];
+        int    port = Integer.parseInt(parts[1]);
 
-	    String calleeUri = ack.getToUri();
-	    RegistrationInfo calleeReg = getValidRegistration(calleeUri);
+        System.out.println("[Proxy] Reenviando 200 OK al llamante");
+        transactionLayer.forwardInviteOk(ok, ip, port);
+    }
 
-	    if (calleeReg == null) return;
+    public void onAckFromCaller(ACKMessage ack) throws IOException {
+        if (!looseRouting) {
+            return;
+        }
 
-	    String[] parts = calleeReg.contact.split(":");
-	    String ip = parts[0];
-	    int port = Integer.parseInt(parts[1]);
+        String calleeUri = ack.getToUri();
+        RegistrationInfo calleeReg = getValidRegistration(calleeUri);
 
-	    System.out.println("[Proxy] Reenviando ACK al callee");
-	    transactionLayer.forwardAck(ack, ip, port);
-	}
+        if (calleeReg == null) return;
 
-	
-	
+        String[] parts = calleeReg.contact.split(":");
+        String ip   = parts[0];
+        int    port = Integer.parseInt(parts[1]);
+
+        // Requisito: el proxy elimina Route en ACK si hay loose routing
+        ack.setRoute(null);
+
+        // Añadimos Via del proxy arriba (si viene lista de Vias)
+        if (ack.getVias() != null) {
+            ack.getVias().add(0, proxyIp + ":" + proxyPort);
+        }
+
+        System.out.println("[Proxy] Reenviando ACK al callee");
+        transactionLayer.forwardAck(ack, ip, port);
+    }
+
+
+    // ===================== BYE con loose routing =====================
+
+    /**
+     * Llega un BYE al proxy (solo en loose routing).
+     * Se reenvía al otro UA quitando el Route del proxy y añadiendo su Via.
+     */
+    public void onByeReceived(ByeMessage bye) throws IOException {
+        if (!looseRouting) {
+            return;
+        }
+
+        String toUri = bye.getToUri();  // destino del BYE
+        RegistrationInfo destReg = getValidRegistration(toUri);
+
+        if (destReg == null) {
+            System.out.println("[Proxy] Destino del BYE NO registrado → se descarta.");
+            return;
+        }
+
+        String[] parts = destReg.contact.split(":");
+        String ip   = parts[0];
+        int    port = Integer.parseInt(parts[1]);
+
+        // Quitamos el Route (en esta práctica solo viene el del proxy)
+        bye.setRoute(null);
+
+        // Añadimos Via del proxy arriba
+        bye.getVias().add(0, proxyIp + ":" + proxyPort);
+
+        System.out.println("[Proxy] Reenviando BYE a " + toUri + " en " + ip + ":" + port);
+        transactionLayer.forwardBye(bye, ip, port);
+    }
+
+    /**
+     * Llega el 200 OK del BYE desde el callee.
+     * Lo reenviamos al UA que envió el BYE.
+     */
+    public void onByeOkFromCallee(OKMessage ok) throws IOException {
+        if (!looseRouting) {
+            return;
+        }
+
+        // El que envió el BYE está en el To del 200 OK
+        String byeOriginUri = ok.getFromUri();
+        RegistrationInfo originReg = getValidRegistration(byeOriginUri);
+
+        if (originReg == null) {
+            System.out.println("[Proxy] Origen del BYE no registrado → se descarta 200 OK.");
+            return;
+        }
+
+        String[] parts = originReg.contact.split(":");
+        String ip   = parts[0];
+        int    port = Integer.parseInt(parts[1]);
+
+        System.out.println("[Proxy] Reenviando 200 OK al BYE hacia " +
+                byeOriginUri + " en " + ip + ":" + port);
+        transactionLayer.forwardByeOk(ok, ip, port);
+    }
+
+    // ===================== 486 / 408  =====================
+
     public void onBusyHereFromCallee(BusyHereMessage busy) throws IOException {
 
-        // En las respuestas, el From suele ser el caller original
         String callerUri = busy.getFromUri();
         RegistrationInfo callerReg = getValidRegistration(callerUri);
 
@@ -146,12 +238,12 @@ public class ProxyUserLayer {
         String ip   = parts[0];
         int    port = Integer.parseInt(parts[1]);
 
-        System.out.println("[Proxy] Reenviando 486 Busy Here al llamante " 
-                           + callerUri + " en " + ip + ":" + port);
+        System.out.println("[Proxy] Reenviando 486 Busy Here al llamante "
+                + callerUri + " en " + ip + ":" + port);
 
         transactionLayer.forwardBusyHere(busy, ip, port);
     }
-    
+
     public void onRequestTimeoutFromCallee(RequestTimeoutMessage rt) throws IOException {
 
         String callerUri = rt.getFromUri();
@@ -167,85 +259,42 @@ public class ProxyUserLayer {
         int    port = Integer.parseInt(parts[1]);
 
         System.out.println("[Proxy] Reenviando 408 Request Timeout al llamante "
-                           + callerUri + " en " + ip + ":" + port);
+                + callerUri + " en " + ip + ":" + port);
 
         transactionLayer.forwardRequestTimeout(rt, ip, port);
     }
 
+    // ===================== REGISTER =====================
 
-
-
-//	public void onInviteReceived(InviteMessage inviteMessage) throws IOException {
-//	    System.out.println("Proxy: recibido INVITE de " + inviteMessage.getFromUri() +
-//	                       " para " + inviteMessage.getToUri());
-//
-//	    String callerUri = inviteMessage.getFromUri(); // ej: sip:alice@SMA
-//	    String calleeUri = inviteMessage.getToUri();   // ej: sip:bob@SMA
-//
-//	    RegistrationInfo callerReg = getValidRegistration(callerUri);
-//	    RegistrationInfo calleeReg = getValidRegistration(calleeUri);
-//
-//	    if (callerReg == null) {
-//	        System.out.println("Proxy: caller no registrado, ignorando INVITE.");
-//	        return;
-//	    }
-//
-//	    if (calleeReg == null) {
-//	        System.out.println("Proxy: callee no registrado o expirado → 404 al caller");
-//	        transactionLayer.sendInviteNotFound(inviteMessage, callerReg.contact);
-//	        return;
-//	    }
-//
-//	    // Tenemos contact del callee, tipo "IP:puerto"
-//	    String[] parts = calleeReg.contact.split(":");
-//	    String destIp   = parts[0];
-//	    int    destPort = Integer.parseInt(parts[1]);
-//
-//	    System.out.println("Proxy: reenviando INVITE a " + calleeUri +
-//	                       " en " + destIp + ":" + destPort);
-//
-//	    transactionLayer.forwardInvite(inviteMessage, destIp, destPort);
-//	}
-
-
-	public void startListening() {
-		transactionLayer.startListening();
-	}
-	
     public void onRegisterReceived(RegisterMessage registerMessage) throws IOException {
 
-        // 1) Usuario SIP (ej: "sip:alice@SMA")
-        String userUri = registerMessage.getToUri();
-
-        // 2) Contact y Expires
-        String contact = registerMessage.getContact();           // "IP:puerto"
-        int expiresSec = Integer.parseInt(registerMessage.getExpires());
+        String userUri  = registerMessage.getToUri();   // sip:alice@SMA
+        String contact  = registerMessage.getContact(); // "IP:puerto"
+        int expiresSec  = Integer.parseInt(registerMessage.getExpires());
 
         System.out.println("REGISTER recibido de " + userUri +
-                           " contact=" + contact +
-                           " expires=" + expiresSec + "s");
+                " contact=" + contact +
+                " expires=" + expiresSec + "s");
 
-        // 3) Comprobar si el usuario está permitido (de momento aceptamos todos)
-        boolean valido = isUserAllowed(userUri);
+        boolean valido = isUserAllowed(userUri);  // ahora mismo siempre true
 
         if (!valido) {
-            // Usuario no permitido -> 404
             transactionLayer.sendRegisterResponse(registerMessage, contact, false);
             return;
         }
 
-        // 4) Guardar/actualizar la tabla de registros
         RegistrationInfo info = new RegistrationInfo();
         info.contact     = contact;
         info.expiresAtMs = System.currentTimeMillis() + expiresSec * 1000L;
-
         registrations.put(userUri, info);
 
-        // 5) Responder 200 OK
         transactionLayer.sendRegisterResponse(registerMessage, contact, true);
+        
+        
     }
-    
-    // Devuelve la info de registro solo si el usuario está registrado y no ha expirado
+
+    // ===================== Utilidades registro =====================
+
     private RegistrationInfo getValidRegistration(String userUri) {
         RegistrationInfo info = registrations.get(userUri);
         if (info == null) {
@@ -258,43 +307,14 @@ public class ProxyUserLayer {
     }
 
     private boolean isUserAllowed(String userUri) {
-/*
-        // userUri viene del REGISTER, tipo "sip:mario@it.uc3m.es"
-        // En users.xml los ids son justo de ese estilo.
-
-        try (InputStream xml = UsersServletReader.class
-                .getResourceAsStream("users.xml")) {
-
-            if (xml == null) {
-                System.err.println("No se ha encontrado users.xml en el classpath");
-                return false;
-            }
-
-            JAXBContext jaxbContext = JAXBContext.newInstance(Users.class);
-            Unmarshaller jaxbUnmarshaller = jaxbContext.createUnmarshaller();
-
-            Users users = (Users) jaxbUnmarshaller.unmarshal(xml);
-
-            // Recorremos la lista <user id="...">
-            for (User u : users.getListUsers()) {
-                String id = u.getId();   // atributo id="sip:loquesea"
-                if (id != null && id.equalsIgnoreCase(userUri)) {
-                    return true;        // usuario permitido
-                }
-            }
-
-        } catch (Exception e) {
-            System.err.println("Error leyendo users.xml: " + e.getMessage());
-            e.printStackTrace();
-        }
-
-        return false; // si no está en el XML o hay error → no permitido
-        */
-    	return true;
+        // userUri viene tipo "sip:alice@SMA"
+        return ALLOWED_USERS.contains(userUri);
     }
 
 
+    // ===================== Arrancar escucha =====================
 
-
-
+    public void startListening() {
+        transactionLayer.startListening();
+    }
 }

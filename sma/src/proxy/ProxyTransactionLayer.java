@@ -4,158 +4,254 @@ import java.io.IOException;
 import java.net.SocketException;
 
 import mensajesSIP.ACKMessage;
+import mensajesSIP.BusyHereMessage;
+import mensajesSIP.ByeMessage;
 import mensajesSIP.InviteMessage;
 import mensajesSIP.NotFoundMessage;
 import mensajesSIP.OKMessage;
 import mensajesSIP.RegisterMessage;
-import mensajesSIP.RingingMessage;
-import mensajesSIP.SIPMessage;
-import mensajesSIP.ServiceUnavailableMessage;
-import mensajesSIP.TryingMessage;
-import mensajesSIP.BusyHereMessage;
 import mensajesSIP.RequestTimeoutMessage;
+import mensajesSIP.RingingMessage;
+import mensajesSIP.ServiceUnavailableMessage;
+import mensajesSIP.SIPMessage;
+import mensajesSIP.TryingMessage;
 
 public class ProxyTransactionLayer {
 
-    // Estado muy simple: solo controlamos si el proxy está libre u ocupado en UNA llamada
+    // Estado muy simple para la TRANSACCIÓN INVITE
     private static final int IDLE = 0;
     private static final int BUSY = 1;
 
     private int state = IDLE;
-    private String activeCallId = null;   // Call-ID de la llamada en curso
+
+    // Call-ID de la llamada en curso (si la hay)
+    private String activeCallId = null;
+
+    // Con loose routing: true mientras la llamada está establecida (entre 200 OK INVITE y 200 OK BYE)
+    private boolean dialogActive = false;
+
+    private final boolean looseRouting;
 
     private ProxyUserLayer userLayer;
     private ProxyTransportLayer transportLayer;
-
-    public ProxyTransactionLayer(int listenPort, ProxyUserLayer userLayer) throws SocketException {
-        this.userLayer = userLayer;
+    
+    public ProxyTransactionLayer(int listenPort,
+                                 ProxyUserLayer userLayer,
+                                 boolean looseRouting) throws SocketException {
+        this.userLayer     = userLayer;
+        this.looseRouting  = looseRouting;
         this.transportLayer = new ProxyTransportLayer(listenPort, this);
     }
 
     /**
      * Punto central de entrada de TODOS los mensajes que llegan al proxy.
      */
-    public void onMessageReceived(SIPMessage sipMessage, String sourceIp, int sourcePort) throws IOException {
+    public void onMessageReceived(SIPMessage sipMessage,
+                                  String sourceIp,
+                                  int sourcePort) throws IOException {
 
-        // 1) REGISTER: pasa a la UserLayer (que mantiene la tabla de registros)
+        // 1) REGISTER
         if (sipMessage instanceof RegisterMessage) {
-            RegisterMessage reg = (RegisterMessage) sipMessage;
-            userLayer.onRegisterReceived(reg);
+            userLayer.onRegisterReceived((RegisterMessage) sipMessage);
             return;
         }
 
-        // 2) INVITE (nuevo intento de llamada)
+        // 2) INVITE
         if (sipMessage instanceof InviteMessage) {
-            InviteMessage invite = (InviteMessage) sipMessage;
-            handleInvite(invite, sourceIp, sourcePort);
+            handleInvite((InviteMessage) sipMessage, sourceIp, sourcePort);
             return;
         }
 
-        // 3) 180 Ringing (desde el callee hacia el proxy)
+        // 3) 180 Ringing
         if (sipMessage instanceof RingingMessage) {
-            RingingMessage ringing = (RingingMessage) sipMessage;
-            userLayer.onRingingFromCallee(ringing);
+            userLayer.onRingingFromCallee((RingingMessage) sipMessage);
             return;
         }
 
-        // 4) 200 OK al INVITE (desde el callee hacia el proxy)
+        // 4) 200 OK (INVITE / BYE)
         if (sipMessage instanceof OKMessage) {
             OKMessage ok = (OKMessage) sipMessage;
             String cseqMethod = ok.getcSeqStr();
+
             if ("INVITE".equalsIgnoreCase(cseqMethod)) {
                 userLayer.onInviteOKFromCallee(ok);
+
+                if (looseRouting &&
+                        activeCallId != null &&
+                        activeCallId.equals(ok.getCallId())) {
+                    dialogActive = true;
+                    System.out.println("[Proxy-TX] 200 OK al INVITE → diálogo activo (loose routing).");
+                } else {
+                    // SIN loose routing: no esperamos ACK (porque va extremo-a-extremo)
+                    if (activeCallId != null && activeCallId.equals(ok.getCallId())) {
+                        state = IDLE;
+                        dialogActive = false;
+                        activeCallId = null;
+                        System.out.println("[Proxy-TX] 200 OK al INVITE (sin loose routing) → proxy vuelve a IDLE.");
+                    }
+                }
                 return;
             }
-            // En esta fase ignoramos otros OK (BYE, etc.)
+
+            if ("BYE".equalsIgnoreCase(cseqMethod)) {
+                handleByeOk(ok);
+                return;
+            }
         }
 
-        // 5) 404 Not Found al INVITE (desde el proxy hacia el caller ya se gestiona arriba)
+        // 5) 404 Not Found al INVITE
         if (sipMessage instanceof NotFoundMessage) {
             NotFoundMessage nf = (NotFoundMessage) sipMessage;
             String cseqMethod = nf.getcSeqStr();
             if ("INVITE".equalsIgnoreCase(cseqMethod)) {
-                // El UA llamante lo gestionará (ya tienes handleInviteError en el UA)
-                // Aquí el proxy no necesita hacer nada especial.
-                System.out.println("[Proxy-TX] 404 Not Found para INVITE → reenvío ya hecho anteriormente.");
+                System.out.println("[Proxy-TX] 404 Not Found para INVITE → el UA llamante lo gestionará.");
                 return;
             }
         }
 
-        // 6) ACK (desde el caller hacia el proxy)
+        // 6) ACK
         if (sipMessage instanceof ACKMessage) {
-            ACKMessage ack = (ACKMessage) sipMessage;
-            handleAck(ack);
-            return;
-        }
-        
-        // --- 486 Busy Here ---
-        if (sipMessage instanceof BusyHereMessage) {
-            BusyHereMessage busy = (BusyHereMessage) sipMessage;
-            userLayer.onBusyHereFromCallee(busy);
+            handleAck((ACKMessage) sipMessage);
             return;
         }
 
-        // --- 408 Request Timeout ---
+        if (sipMessage instanceof BusyHereMessage) {
+            BusyHereMessage bh = (BusyHereMessage) sipMessage;
+            userLayer.onBusyHereFromCallee(bh);
+
+            if (!looseRouting && activeCallId != null && activeCallId.equals(bh.getCallId())) {
+                state = IDLE;
+                dialogActive = false;
+                activeCallId = null;
+                System.out.println("[Proxy-TX] 486 (sin loose routing) → proxy vuelve a IDLE.");
+            }
+            return;
+        }
+
         if (sipMessage instanceof RequestTimeoutMessage) {
             RequestTimeoutMessage rt = (RequestTimeoutMessage) sipMessage;
             userLayer.onRequestTimeoutFromCallee(rt);
+
+            if (!looseRouting && activeCallId != null && activeCallId.equals(rt.getCallId())) {
+                state = IDLE;
+                dialogActive = false;
+                activeCallId = null;
+                System.out.println("[Proxy-TX] 408 (sin loose routing) → proxy vuelve a IDLE.");
+            }
             return;
         }
 
+
+        // 9) BYE (solo si hay loose routing)
+        if (sipMessage instanceof ByeMessage) {
+            handleBye((ByeMessage) sipMessage);
+            return;
+        }
 
         System.err.println("[Proxy-TX] Mensaje inesperado de tipo "
                 + sipMessage.getClass().getSimpleName() + ", se ignora.");
     }
-    
-    
 
     // ================== LÓGICA DE INVITE ==================
 
-    private void handleInvite(InviteMessage invite, String sourceIp, int sourcePort) throws IOException {
+    private void handleInvite(InviteMessage invite,
+                              String sourceIp,
+                              int sourcePort) throws IOException {
 
         String callId = invite.getCallId();
 
-        if (state == IDLE) {
-            // Primera llamada: el proxy pasa a estar BUSY con este Call-ID
-            state = BUSY;
+        if (!hasActiveCall()) {
+            // Primera llamada o no hay llamada en curso
+            state        = BUSY;
             activeCallId = callId;
+            dialogActive = false;
 
-            System.out.println("[Proxy-TX] Nuevo INVITE (Call-ID=" + callId + ") → Proxy pasa a BUSY.");
+            System.out.println("[Proxy-TX] Nuevo INVITE (Call-ID=" + callId +
+                    ") → Proxy pasa a BUSY.");
 
-            // Delegamos la lógica "de negocio" en la UserLayer
-            // (verificación de registros, envío de 100 Trying, reenvío de INVITE al callee, etc.)
             userLayer.onInviteReceived(invite, sourceIp, sourcePort);
 
         } else {
-            // Ya estamos en una llamada → según el enunciado, contestamos 503 y NO creamos transacción nueva
-            System.out.println("[Proxy-TX] Recibido INVITE mientras proxy está BUSY → responder 503.");
+            // Ya hay llamada en curso
+            if (activeCallId != null && activeCallId.equals(callId)) {
+                // Retransmisión del mismo INVITE: la ignoramos
+                System.out.println("[Proxy-TX] INVITE duplicado para Call-ID activo → ignorado.");
+                return;
+            }
 
+            System.out.println("[Proxy-TX] Recibido INVITE mientras proxy está ocupado → responder 503.");
             sendServiceUnavailable(invite, sourceIp, sourcePort);
-            // No cambiamos state ni activeCallId; la llamada en curso sigue.
+        }
+    }
+
+    /**
+     * true si el proxy debe considerarse “ocupado” para nuevos INVITE.
+     *  - sin loose routing: solo durante la transacción INVITE (state == BUSY)
+     *  - con loose routing: durante la transacción INVITE o mientras el diálogo siga activo
+     */
+    private boolean hasActiveCall() {
+        if (!looseRouting) {
+            return state == BUSY;
+        } else {
+            return state == BUSY || dialogActive;
         }
     }
 
     private void handleAck(ACKMessage ack) throws IOException {
         String callId = ack.getCallId();
 
-        // Solo reenviamos ACK si corresponde a la llamada activa
         if (activeCallId != null && activeCallId.equals(callId)) {
             System.out.println("[Proxy-TX] ACK recibido para Call-ID activo → reenviar al callee.");
             userLayer.onAckFromCaller(ack);
 
-            // A nivel de transacción INVITE, aquí podríamos considerar la transacción completada.
-            // PERO la llamada (diálogo) sigue hasta el BYE, por lo que mantenemos el estado BUSY.
-            // Cuando implementes BYE, ahí sí pasarás a IDLE.
+            // La transacción INVITE termina aquí (éxito o error).
+            state = IDLE;
+            System.out.println("[Proxy-TX] ACK procesado → Proxy vuelve a IDLE (transacción INVITE terminada).");
         } else {
             System.out.println("[Proxy-TX] ACK recibido para Call-ID desconocido/antiguo → se ignora.");
         }
     }
 
-    // ================== ENVÍO DE RESPUESTAS ==================
+    // ================== BYE (solo loose routing) ==================
 
-    /**
-     * Respuesta REGISTER: 200 OK o 404 Not Found al UA.
-     */
+    private void handleBye(ByeMessage bye) throws IOException {
+        if (!looseRouting) {
+            System.out.println("[Proxy-TX] BYE recibido pero loose routing desactivado → se ignora.");
+            return;
+        }
+
+        String callId = bye.getCallId();
+        if (activeCallId == null || !activeCallId.equals(callId)) {
+            System.out.println("[Proxy-TX] BYE recibido para Call-ID desconocido → se ignora.");
+            return;
+        }
+
+        userLayer.onByeReceived(bye);
+    }
+
+    private void handleByeOk(OKMessage ok) throws IOException {
+        if (!looseRouting) {
+            System.out.println("[Proxy-TX] 200 OK al BYE recibido pero loose routing desactivado → se ignora.");
+            return;
+        }
+
+        String callId = ok.getCallId();
+        if (activeCallId == null || !activeCallId.equals(callId)) {
+            System.out.println("[Proxy-TX] 200 OK al BYE para Call-ID desconocido → se ignora.");
+            return;
+        }
+
+        userLayer.onByeOkFromCallee(ok);
+
+        // Fin de diálogo: liberamos totalmente el proxy
+        dialogActive = false;
+        activeCallId = null;
+        state = IDLE;
+        System.out.println("[Proxy-TX] 200 OK al BYE procesado → fin de llamada, proxy libre.");
+    }
+
+    // ================== ENVÍO / REENVÍO ==================
+
     public void sendRegisterResponse(RegisterMessage reg,
                                      String contact,
                                      boolean ok) throws IOException {
@@ -163,7 +259,6 @@ public class ProxyTransactionLayer {
         SIPMessage response;
 
         if (ok) {
-            // 200 OK al REGISTER
             OKMessage okMsg = new OKMessage();
             okMsg.setVias(reg.getVias());
             okMsg.setToName(reg.getToName());
@@ -178,7 +273,6 @@ public class ProxyTransactionLayer {
             okMsg.setContentLength(0);
             response = okMsg;
         } else {
-            // 404 Not Found al REGISTER
             NotFoundMessage nf = new NotFoundMessage();
             nf.setVias(reg.getVias());
             nf.setToName(reg.getToName());
@@ -194,10 +288,9 @@ public class ProxyTransactionLayer {
             response = nf;
         }
 
-        // contact viene como "IP:puerto"
         String[] parts = contact.split(":");
-        String ip = parts[0];
-        int port = Integer.parseInt(parts[1]);
+        String ip   = parts[0];
+        int    port = Integer.parseInt(parts[1]);
 
         transportLayer.send(response, ip, port);
     }
@@ -207,17 +300,17 @@ public class ProxyTransactionLayer {
                               int port) throws IOException {
         transportLayer.send(inviteMessage, address, port);
     }
-    
+
     public void forwardBusyHere(BusyHereMessage busy,
-            String ip,
-            int port) throws IOException {
-    	transportLayer.send(busy, ip, port);
+                                String ip,
+                                int port) throws IOException {
+        transportLayer.send(busy, ip, port);
     }
 
     public void forwardRequestTimeout(RequestTimeoutMessage rt,
-                  String ip,
-                  int port) throws IOException {
-    	transportLayer.send(rt, ip, port);
+                                      String ip,
+                                      int port) throws IOException {
+        transportLayer.send(rt, ip, port);
     }
 
     public void sendInviteNotFound(InviteMessage inviteMessage,
@@ -235,8 +328,8 @@ public class ProxyTransactionLayer {
         nf.setContentLength(0);
 
         String[] parts = callerContact.split(":");
-        String ip = parts[0];
-        int port = Integer.parseInt(parts[1]);
+        String ip   = parts[0];
+        int    port = Integer.parseInt(parts[1]);
 
         transportLayer.send(nf, ip, port);
     }
@@ -248,22 +341,15 @@ public class ProxyTransactionLayer {
     }
 
     public void sendTrying(InviteMessage invite, String ip, int port) throws IOException {
-    	TryingMessage trying = new TryingMessage();
-    	// Vias: mismas que el INVITE
+        TryingMessage trying = new TryingMessage();
         trying.setVias(invite.getVias());
-
-        // To / From
         trying.setToName(invite.getToName());
         trying.setToUri(invite.getToUri());
         trying.setFromName(invite.getFromName());
         trying.setFromUri(invite.getFromUri());
-
-        // Call-ID y CSeq
         trying.setCallId(invite.getCallId());
         trying.setcSeqNumber(invite.getcSeqNumber());
-        trying.setcSeqStr(invite.getcSeqStr());  // "INVITE"
-
-        // 100 Trying no lleva cuerpo
+        trying.setcSeqStr(invite.getcSeqStr());
         trying.setContentLength(0);
         transportLayer.send(trying, ip, port);
     }
@@ -276,9 +362,16 @@ public class ProxyTransactionLayer {
         transportLayer.send(ack, ip, port);
     }
 
+    public void forwardBye(ByeMessage bye, String ip, int port) throws IOException {
+        transportLayer.send(bye, ip, port);
+    }
+
+    public void forwardByeOk(OKMessage ok, String ip, int port) throws IOException {
+        transportLayer.send(ok, ip, port);
+    }
+
     private void sendServiceUnavailable(InviteMessage invite, String ip, int port) throws IOException {
         ServiceUnavailableMessage su = new ServiceUnavailableMessage();
-
         su.setVias(invite.getVias());
         su.setToName(invite.getToName());
         su.setToUri(invite.getToUri());
@@ -288,7 +381,6 @@ public class ProxyTransactionLayer {
         su.setcSeqNumber(invite.getcSeqNumber());
         su.setcSeqStr(invite.getcSeqStr());
         su.setContentLength(0);
-
         transportLayer.send(su, ip, port);
     }
 
