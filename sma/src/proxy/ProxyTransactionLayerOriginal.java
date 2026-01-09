@@ -16,7 +16,7 @@ import mensajesSIP.ServiceUnavailableMessage;
 import mensajesSIP.SIPMessage;
 import mensajesSIP.TryingMessage;
 
-public class ProxyTransactionLayer {
+public class ProxyTransactionLayerOriginal {
 
     // Estado muy simple para la TRANSACCIÓN INVITE
     private static final int IDLE = 0;
@@ -35,7 +35,7 @@ public class ProxyTransactionLayer {
     private ProxyUserLayer userLayer;
     private ProxyTransportLayer transportLayer;
     
-    public ProxyTransactionLayer(int listenPort,
+    public ProxyTransactionLayerOriginal(int listenPort,
                                  ProxyUserLayer userLayer,
                                  boolean looseRouting) throws SocketException {
         this.userLayer     = userLayer;
@@ -387,50 +387,4 @@ public class ProxyTransactionLayer {
     public void startListening() {
         transportLayer.startListening();
     }
-    
-    public void sendBusyHereForInviteFromProxy(InviteMessage invite, String callerContact) throws IOException {
-	
-		BusyHereMessage busy = new BusyHereMessage();
-		
-		// Copiamos los campos relevantes del INVITE, igual que en UaTransactionLayer
-		busy.setVias(invite.getVias());
-		busy.setToName(invite.getToName());
-		busy.setToUri(invite.getToUri());
-		busy.setFromName(invite.getFromName());
-		busy.setFromUri(invite.getFromUri());
-		busy.setCallId(invite.getCallId());
-		busy.setcSeqNumber(invite.getcSeqNumber());
-		busy.setcSeqStr(invite.getcSeqStr()); // "INVITE"
-		busy.setContentLength(0);
-		
-		// Sacamos IP y puerto del caller a partir del contact
-		String[] parts = callerContact.split(":");
-		String ip   = parts[0];
-		int    port = Integer.parseInt(parts[1]);
-		
-		// Reutilizamos tu lógica de reenvío de 486
-		forwardBusyHere(busy, ip, port);
-	}
-    
-    public void sendRequestTimeoutForInviteFromProxy(InviteMessage invite, String callerContact) throws IOException {
-
-		RequestTimeoutMessage rt = new RequestTimeoutMessage();
-		
-		rt.setVias(invite.getVias());
-		rt.setToName(invite.getToName());
-		rt.setToUri(invite.getToUri());
-		rt.setFromName(invite.getFromName());
-		rt.setFromUri(invite.getFromUri());
-		rt.setCallId(invite.getCallId());
-		rt.setcSeqNumber(invite.getcSeqNumber());
-		rt.setcSeqStr(invite.getcSeqStr()); // "INVITE"
-		rt.setContentLength(0);
-		
-		String[] parts = callerContact.split(":");
-		String ip   = parts[0];
-		int    port = Integer.parseInt(parts[1]);
-		
-		forwardRequestTimeout(rt, ip, port);
-    }
-    
 }

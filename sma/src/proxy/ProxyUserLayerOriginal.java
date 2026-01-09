@@ -28,14 +28,13 @@ import sipServlet.SipServletRequest;
  *  - mantiene la tabla de registros (REGISTER)
  *  - decide a qué UA hay que reenviar cada mensaje
  */
-public class ProxyUserLayer {
+public class ProxyUserLayerOriginal {
 
 	// Lista de usuarios permitidos (URIs completas)
 	private static final Set<String> ALLOWED_USERS = new HashSet<>(Arrays.asList(
 	        "sip:alice@SMA",
 	        "sip:bob@SMA",
-	        "sip:charlie@SMA",
-	        "sip:boss@SMA"
+	        "sip:charlie@SMA"
 	));
 	
 	private final Map<String, String> servletByUserUri;
@@ -56,7 +55,7 @@ public class ProxyUserLayer {
     private ProxyTransactionLayer transactionLayer;
     private Map<String, RegistrationInfo> registrations = new HashMap<>();
 
-    public ProxyUserLayer(int listenPort, boolean looseRouting, Map<String, String> servletByUserUri )
+    public ProxyUserLayerOriginal(int listenPort, boolean looseRouting, Map<String, String> servletByUserUri )
             throws SocketException, UnknownHostException {
 
     	this.servletByUserUri = (servletByUserUri != null) ? servletByUserUri : new HashMap<>();
@@ -69,7 +68,9 @@ public class ProxyUserLayer {
 
     // ===================== INVITE / RUTA PRINCIPAL =====================
 
-    public void onInviteReceived(InviteMessage inviteMessage, String sourceIp, int sourcePort) throws IOException {
+    public void onInviteReceived(InviteMessage inviteMessage,
+                                 String sourceIp,
+                                 int sourcePort) throws IOException {
 
         String callerUri = inviteMessage.getFromUri();
         String calleeUri = inviteMessage.getToUri();
@@ -86,166 +87,48 @@ public class ProxyUserLayer {
         }
 
         if (servletClassName != null) {
-            handleInviteWithServlet(inviteMessage, sourceIp, sourcePort, callerUri, calleeUri, servletClassName);
+            //handleInviteWithServlet(inviteMessage, sourceIp, sourcePort, callerUri, calleeUri, servletClassName);
             return; 
         }
         
-        processInviteAsDefault(inviteMessage, sourceIp, sourcePort, callerUri, calleeUri);
-        
-        
-//        RegistrationInfo callerReg = getValidRegistration(callerUri);
-//        RegistrationInfo calleeReg = getValidRegistration(calleeUri);
-//
-//        if (callerReg == null) {
-//            System.out.println("[Proxy] Caller NO registrado → ignorando INVITE.");
-//            return;
-//        }
-//
-//        if (calleeReg == null) {
-//            System.out.println("[Proxy] Callee NO registrado → enviando 404");
-//            transactionLayer.sendInviteNotFound(inviteMessage, callerReg.contact);
-//            return;
-//        }
-//
-//        // 1) Enviar 100 Trying al llamante (IP/puerto de donde vino el INVITE)
-//        System.out.println("[Proxy] Enviando 100 Trying al llamante");
-//        transactionLayer.sendTrying(inviteMessage, sourceIp, sourcePort);
-//
-//        // 2) Dirección real del callee a partir del REGISTER
-//        String[] parts = calleeReg.contact.split(":");
-//        String destIp   = parts[0];
-//        int    destPort = Integer.parseInt(parts[1]);
-//
-//        // 3) Añadir Via del proxy arriba
-//        inviteMessage.getVias().add(0, proxyIp + ":" + proxyPort);
-//
-//        // 4) Si hay loose routing, añadimos Record-Route con la dirección del proxy
-//        if (looseRouting) {
-//            inviteMessage.setRecordRoute(proxyIp + ":" + proxyPort);
-//        }
-//
-//        // 5) Reenviar el INVITE al UA llamado
-//        System.out.println("[Proxy] Reenviando INVITE al callee " +
-//                calleeUri + " en " + destIp + ":" + destPort);
-//        transactionLayer.forwardInvite(inviteMessage, destIp, destPort);
+        RegistrationInfo callerReg = getValidRegistration(callerUri);
+        RegistrationInfo calleeReg = getValidRegistration(calleeUri);
+
+        if (callerReg == null) {
+            System.out.println("[Proxy] Caller NO registrado → ignorando INVITE.");
+            return;
+        }
+
+        if (calleeReg == null) {
+            System.out.println("[Proxy] Callee NO registrado → enviando 404");
+            transactionLayer.sendInviteNotFound(inviteMessage, callerReg.contact);
+            return;
+        }
+
+        // 1) Enviar 100 Trying al llamante (IP/puerto de donde vino el INVITE)
+        System.out.println("[Proxy] Enviando 100 Trying al llamante");
+        transactionLayer.sendTrying(inviteMessage, sourceIp, sourcePort);
+
+        // 2) Dirección real del callee a partir del REGISTER
+        String[] parts = calleeReg.contact.split(":");
+        String destIp   = parts[0];
+        int    destPort = Integer.parseInt(parts[1]);
+
+        // 3) Añadir Via del proxy arriba
+        inviteMessage.getVias().add(0, proxyIp + ":" + proxyPort);
+
+        // 4) Si hay loose routing, añadimos Record-Route con la dirección del proxy
+        if (looseRouting) {
+            inviteMessage.setRecordRoute(proxyIp + ":" + proxyPort);
+        }
+
+        // 5) Reenviar el INVITE al UA llamado
+        System.out.println("[Proxy] Reenviando INVITE al callee " +
+                calleeUri + " en " + destIp + ":" + destPort);
+        transactionLayer.forwardInvite(inviteMessage, destIp, destPort);
     }
     
-    private void handleInviteWithServlet(InviteMessage inviteMessage, String sourceIp, int sourcePort, String callerUri, String calleeUri, String servletClassName) throws IOException {
-		try {
-			System.out.println("[Proxy] Ejecutando SIPServlet " + servletClassName + " para INVITE " + callerUri + " -> " + calleeUri);
-			
-			// 1) Instanciar el servlet por reflexión
-			Class<?> clazz = Class.forName(servletClassName);
-			SIPServletInterface servlet =
-			(SIPServletInterface) clazz.getDeclaredConstructor().newInstance();
-			
-			// 2) Crear el SipServletRequest (impl) asociado a este INVITE
-			SipServletRequest requestImpl = new SipServletRequest(callerUri, calleeUri, inviteMessage, sourceIp, sourcePort);
-			
-			// Lo pasamos al servlet como interfaz
-			SipServletRequestInterface request = requestImpl;
-			
-			// 3) Invocar doInvite() del servlet
-			servlet.doInvite(request);
-			
-			// 4) Al volver, leemos la decisión registrada en el request
-			if (requestImpl.hasResponseDecision()) {
-				int status = requestImpl.getResponseCode();
-				System.out.println("[Proxy] SIPServlet decidió responder con " + status);
-				sendErrorResponseFromServlet(inviteMessage, status, callerUri);
-			} else if (requestImpl.hasProxyDecision()) {
-				String targetUri = requestImpl.getProxyTargetUri();
-				System.out.println("[Proxy] SIPServlet decidió proxyTo(" + targetUri + ")");
-				processInviteAsDefault(inviteMessage, sourceIp, sourcePort, callerUri, targetUri);
-			} else {
-				// El servlet no ha hecho nada explícito
-				System.out.println("[Proxy] SIPServlet no tomó decisión → comportamiento P1 por defecto");
-				processInviteAsDefault(inviteMessage, sourceIp, sourcePort, callerUri, calleeUri);
-			}
-		
-		} catch (Exception e) {
-			System.out.println("[Proxy] ERROR ejecutando SIPServlet " + servletClassName
-			+ " → comportamiento P1 por defecto");
-			e.printStackTrace();
-			processInviteAsDefault(inviteMessage, sourceIp, sourcePort, callerUri, calleeUri);
-		}
-	}
-    
-    private void processInviteAsDefault(InviteMessage inviteMessage, String sourceIp, int sourcePort, String callerUri, String targetUri) throws IOException 
-    {
 
-		RegistrationInfo callerReg = getValidRegistration(callerUri);
-		RegistrationInfo calleeReg = getValidRegistration(targetUri);
-		
-		if (callerReg == null) {
-		System.out.println("[Proxy] Caller NO registrado → ignorando INVITE.");
-		return;
-		}
-		
-		if (calleeReg == null) {
-		System.out.println("[Proxy] Callee NO registrado → enviando 404");
-		transactionLayer.sendInviteNotFound(inviteMessage, callerReg.contact);
-		return;
-		}
-		
-		// 1) Enviar 100 Trying al llamante (IP/puerto de donde vino el INVITE)
-		System.out.println("[Proxy] Enviando 100 Trying al llamante");
-		transactionLayer.sendTrying(inviteMessage, sourceIp, sourcePort);
-		
-		// 2) Dirección real del callee a partir del REGISTER
-		String[] parts = calleeReg.contact.split(":");
-		String destIp   = parts[0];
-		int    destPort = Integer.parseInt(parts[1]);
-		
-		// 3) Añadir Via del proxy arriba
-		inviteMessage.getVias().add(0, proxyIp + ":" + proxyPort);
-		
-		// 4) Si hay loose routing, añadimos Record-Route con la dirección del proxy
-		if (looseRouting) {
-		inviteMessage.setRecordRoute(proxyIp + ":" + proxyPort);
-		}
-		
-		// 5) Reenviar el INVITE al UA llamado
-		System.out.println("[Proxy] Reenviando INVITE al callee " +
-		targetUri + " en " + destIp + ":" + destPort);
-		transactionLayer.forwardInvite(inviteMessage, destIp, destPort);
-	}
-    
-    private void sendErrorResponseFromServlet(InviteMessage inviteMessage, int statusCode, String callerUri) throws IOException {
-
-	RegistrationInfo callerReg = getValidRegistration(callerUri);
-	if (callerReg == null) {
-		System.out.println("[Proxy] No se puede enviar respuesta " + statusCode + " porque el caller no está registrado");
-		return;
-	}
-	
-	String callerContact = callerReg.contact;
-	// Para 404 reutilizamos directamente tu helper existente
-	if (statusCode == 404) {
-		System.out.println("[Proxy] Enviando 404 Not Found generado por SIPServlet");
-		transactionLayer.sendInviteNotFound(inviteMessage, callerContact);
-		return;
-	}
-
-	switch (statusCode) {
-	case 486: {
-		System.out.println("[Proxy] Enviando 486 Busy Here generado por SIPServlet");
-		transactionLayer.sendBusyHereForInviteFromProxy(inviteMessage, callerContact);
-		break;
-	}
-	case 408: {
-		System.out.println("[Proxy] Enviando 408 Request Timeout generado por SIPServlet");
-		transactionLayer.sendRequestTimeoutForInviteFromProxy(inviteMessage, callerContact);
-		break;
-	}
-	default: {
-		System.out.println("[Proxy] Código " + statusCode +  " no soportado todavía. Enviando 486 por defecto.");
-		transactionLayer.sendBusyHereForInviteFromProxy(inviteMessage, callerContact);
-		break;
-		}
-	}
-    }
-    
     public void onRingingFromCallee(RingingMessage ringing) throws IOException {
 
         String callerUri = ringing.getFromUri();
