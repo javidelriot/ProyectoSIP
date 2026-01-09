@@ -56,6 +56,9 @@ public class UaUserLayer {
     private Process vitextClient = null;
     private Process vitextServer = null;
     
+    // Configuración por defecto para vitext (multicast)
+    private static final String DEFAULT_MCAST_IP = "239.1.2.3";
+    private static final int DEFAULT_VIDEO_PORT = 49172;
     
  // Info de la llamada activa (para BYE directo UA-UA)
     private String currentCallId;
@@ -305,10 +308,10 @@ public class UaUserLayer {
 
         System.out.println("Inviting " + toUri);
 
-        // SDP con nuestra IP y puerto RTP
+        // SDP: anunciamos el vídeo en multicast (vitext)
         SDPMessage sdpMessage = new SDPMessage();
-        sdpMessage.setIp(this.myAddress);
-        sdpMessage.setPort(this.rtpPort);
+        sdpMessage.setIp(DEFAULT_MCAST_IP);
+        sdpMessage.setPort(DEFAULT_VIDEO_PORT);
         sdpMessage.setOptions(RTPFLOWS);
 
         String callId = UUID.randomUUID().toString();
@@ -386,6 +389,18 @@ public class UaUserLayer {
         currentRemoteContact  = ok.getContact();   // "IP:puerto" del otro UA
         currentRoute          = ok.getRecordRoute(); // null si no hay loose routing
         currentcSeqNumber     = ok.getcSeqNumber();
+        
+     // Arrancar vitextclient con la info SDP del 200 OK
+        try {
+            SDPMessage sdp = ok.getSdp();
+            if (sdp != null) {
+                runVitextClient(sdp.getIp(), sdp.getPort());
+            } else {
+                System.out.println("[UA] 200 OK sin SDP → no puedo arrancar vitextclient.");
+            }
+        } catch (IOException e) {
+            System.out.println("[UA] Error arrancando vitextclient: " + e.getMessage());
+        }
     }
 
 
@@ -473,25 +488,31 @@ public class UaUserLayer {
     //  GESTIÓN VITEXT 
     // =====================================================================
 
-    // private void runVitextClient() throws IOException {
-    //     vitextClient = Runtime.getRuntime().exec(
-    //             "xterm -e vitext/vitextclient -p 5000 239.1.2.3");
-    // }
+    private void runVitextClient(String ip, int port) throws IOException {
+        // Cliente: reproduce (caller A)
+        String cmd = "xterm -e vitext/vitextclient -p " + port + " " + ip;
+        System.out.println("[VITEXT] Lanzando: " + cmd);
+        vitextClient = Runtime.getRuntime().exec(cmd);
+    }
+
+    private void runVitextServer(String ip, int port) throws IOException {
+        // Servidor: emite (callee B)
+        String cmd = "xterm -iconic -e vitext/vitextserver -r 10 -p " + port + " vitext/1.vtx " + ip;
+        System.out.println("[VITEXT] Lanzando: " + cmd);
+        vitextServer = Runtime.getRuntime().exec(cmd);
+    }
 
     private void stopVitextClient() {
         if (vitextClient != null) {
             vitextClient.destroy();
+            vitextClient = null;
         }
     }
-
-    // private void runVitextServer() throws IOException {
-    //     vitextServer = Runtime.getRuntime().exec(
-    //             "xterm -iconic -e vitext/vitextserver -r 10 -p 5000 vitext/1.vtx 239.1.2.3");
-    // }
 
     private void stopVitextServer() {
         if (vitextServer != null) {
             vitextServer.destroy();
+            vitextServer = null;
         }
     }
 
@@ -524,11 +545,22 @@ public class UaUserLayer {
             incomingCallTimer = null;
         }
 
-        // SDP de respuesta (somos el llamado)
+     // SDP de respuesta: usamos la IP multicast y puerto ofrecidos por el caller (vitext)
+        SDPMessage sdpOffer = currentIncomingInvite.getSdp();
         SDPMessage sdpMessage = new SDPMessage();
-        sdpMessage.setIp(this.myAddress);
-        sdpMessage.setPort(this.rtpPort);
-        sdpMessage.setOptions(RTPFLOWS);
+        if (sdpOffer != null) {
+            sdpMessage.setIp(sdpOffer.getIp());
+            sdpMessage.setPort(sdpOffer.getPort());
+            sdpMessage.setOptions(sdpOffer.getOptions() != null ? sdpOffer.getOptions() : RTPFLOWS);
+        } else {
+            // Fallback por si el INVITE no trae SDP
+            sdpMessage.setIp(DEFAULT_MCAST_IP);
+            sdpMessage.setPort(DEFAULT_VIDEO_PORT);
+            sdpMessage.setOptions(RTPFLOWS);
+        }
+
+        // Arrancar vitextserver con la info SDP
+        runVitextServer(sdpMessage.getIp(), sdpMessage.getPort());
 
         String contact = myAddress + ":" + listenPort;
 
