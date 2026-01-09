@@ -35,7 +35,8 @@ public class ProxyUserLayer {
 	        "sip:alice@SMA",
 	        "sip:bob@SMA",
 	        "sip:charlie@SMA",
-	        "sip:boss@SMA"
+	        "sip:boss@SMA",
+	        "sip:mario@SMA"
 	));
 	
 	private final Map<String, String> servletByUserUri;

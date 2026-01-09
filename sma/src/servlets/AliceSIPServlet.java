@@ -17,7 +17,7 @@ import sipServlet.ProxyInterface;
  *      * En otro caso, responde con un 486 (Busy Here).
  *
  *  - Como LLAMANTE (caller), cuando llama a un usuario SIN servlet:
- *      * Solo puede iniciar llamadas entre 10:00 y 11:00.
+ *      * Solo puede iniciar llamadas entre 10:00 y 22:00.
  *      * Fuera de esa franja, responde 486 al INVITE.
  *
  *  Nota: según el enunciado, el contenedor garantiza que:
@@ -38,7 +38,7 @@ public class AliceSIPServlet implements SIPServletInterface {
     private static final LocalTime INCOMING_END   = LocalTime.of(17, 0);  // 17:00
 
     private static final LocalTime OUTGOING_START = LocalTime.of(10, 0);  // 10:00
-    private static final LocalTime OUTGOING_END   = LocalTime.of(11, 0);  // 11:00
+    private static final LocalTime OUTGOING_END   = LocalTime.of(22, 0);  // 11:00
 
     @Override
     public void doInvite(SipServletRequestInterface request) {

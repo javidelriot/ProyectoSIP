@@ -2,7 +2,7 @@
 	<user id="sip:alice@SMA">
 		<Servlet-class name="servlets.AliceSIPServlet" />
 	</user>
-	<user id="sip:fsedano@it.uc3m.es">
-		<Servlet-class name="servlets.JaviSIPServlet" />
+	<user id="sip:charlie@SMA">
+		<Servlet-class name="servlets.CharlieSIPServlet" />
 	</user>
 </users>
