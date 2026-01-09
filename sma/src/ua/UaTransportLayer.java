@@ -61,9 +61,10 @@ public class UaTransportLayer {
      */
     public void send(SIPMessage sipMessage, String address, int port) throws IOException {
         if (debug) {
-            System.out.println("========== [UA SEND] -> " + address + ":" + port + " ==========");
-            System.out.println(sipMessage.toStringMessage());
-            System.out.println("========== [END UA SEND] ==========");
+            System.out.println("\n========== [UA SEND] -> " 
+        	        + address + ":" + port + " ==========");
+        	System.out.println(sipMessage.toStringMessage());
+        	System.out.println("========== [END UA SEND] ==========\n");
         }
         byte[] data = sipMessage.toStringMessage().getBytes();
         send(data, address, port);
@@ -102,9 +103,10 @@ public class UaTransportLayer {
                 if (debug) {
                     String sourceIp = packet.getAddress().getHostAddress();
                     int sourcePort = packet.getPort();
-                    System.out.println("\n========== [UA RECV] <- \" + sourceIp + \":\" + sourcePort + \" ==========");
+                     System.out.println("\n========== [UA RECV] <- " 
+                            + sourceIp + ":" + sourcePort + " ==========");
                     System.out.println(sipMessage.toStringMessage());
-                    System.out.println("========== [END UA RECV] ==========");
+                    System.out.println("========== [END UA RECV] ==========\n");
                 }
 
 // Pasamos el mensaje a la capa de transacciones
