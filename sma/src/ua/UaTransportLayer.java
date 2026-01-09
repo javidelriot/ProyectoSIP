@@ -111,11 +111,24 @@ public class UaTransportLayer {
 
 // Pasamos el mensaje a la capa de transacciones
                 transactionLayer.onMessageReceived(sipMessage);
-
+            } catch (java.net.SocketException se) {
+                // Si hemos cerrado el socket para salir, no es un error: terminamos el hilo.
+                if (socket == null || socket.isClosed()) {
+                    return; // o break;
+                }
             } catch (Exception e) {
                 System.err.println("Error en UaTransportLayer: " + e.getMessage());
                 e.printStackTrace();
             }
         }
     }
+    
+    public void closeSocket() {
+        try {
+            if (socket != null && !socket.isClosed()) {
+                socket.close();
+            }
+        } catch (Exception ignored) {}
+    }
+
 }

@@ -234,6 +234,10 @@ public class UaUserLayer {
     private void command(String line) throws IOException {
         String trimmed = line.trim();
         String upper   = trimmed.toUpperCase();
+        if ("EXIT".equals(upper) || "SALIR".equals(upper) || "QUIT".equals(upper)) {
+            exitCommand();
+            return;
+        }
 
         if (state == IDLE) {
             if (upper.startsWith("INVITE")) {
@@ -695,6 +699,36 @@ public class UaUserLayer {
         state = IDLE;   // vuelves al estado IDLE
     }
 
+    private void exitCommand() throws IOException {
+        System.out.println("[UA] Saliendo...");
+
+        // Si hay llamada activa, cuelga primero (opcional pero recomendable)
+        if (state != IDLE) {
+            try {
+                if (state == INCOMING_RINGING) {
+                    // si está sonando, lo más limpio es rechazar
+                    rejectIncomingCall();
+                } else {
+                    // si hay llamada establecida o en curso, manda BYE
+                    sendByeCommand();
+                }
+            } catch (Exception e) {
+                System.out.println("[UA] Aviso: no se pudo terminar la llamada limpiamente: " + e.getMessage());
+            }
+        }
+
+        // Para vitext si lo tienes integrado
+        try { stopVitextClient(); } catch (Exception ignored) {}
+        try { stopVitextServer(); } catch (Exception ignored) {}
+
+        // Cierra transporte (socket) para liberar el puerto
+        try {
+            transactionLayer.stopTransport();   // te digo abajo cómo implementarlo si no existe
+        } catch (Exception ignored) {}
+
+        System.out.println("[UA] Cerrado.");
+        System.exit(0);
+    }
 
 }
 

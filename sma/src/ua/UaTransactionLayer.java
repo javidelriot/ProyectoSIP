@@ -647,7 +647,12 @@ public class UaTransactionLayer {
         userLayer.onRequestTimeoutFromCallee(rt);
     }
 
-    
+    public void stopTransport() {
+        if (transportLayer != null) {
+            transportLayer.closeSocket();
+        }
+    }
+
 
 
 }
