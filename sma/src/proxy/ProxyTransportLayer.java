@@ -42,9 +42,10 @@ public class ProxyTransportLayer {
      */
     public void send(SIPMessage sipMessage, String address, int port) throws IOException {
         if (debug) {
-            System.out.println("========== [PROXY SEND] -> " + address + ":" + port + " ==========");
-            System.out.println(sipMessage.toStringMessage());
-            System.out.println("========== [END PROXY SEND] ==========");
+           System.out.println("\n========== [PROXY SEND] -> " 
+        	        + address + ":" + port + " ==========");
+        	System.out.println(sipMessage.toStringMessage());
+        	System.out.println("========== [END PROXY SEND] ==========\n");
         }
         byte[] bytes = sipMessage.toStringMessage().getBytes();
         sendSocket(bytes, address, port);
@@ -84,9 +85,10 @@ public class ProxyTransportLayer {
 
                 
                 if (debug) {
-                    System.out.println("\n========== [PROXY RECV] <- \" + sourceIp + \":\" + sourcePort + \" ==========");
-                    System.out.println(sipMessage.toStringMessage());
-                    System.out.println("========== [END PROXY RECV] ==========");
+                    System.out.println("\n========== [PROXY RECV] <- " 
+                	        + sourceIp + ":" + sourcePort + " ==========");
+                	System.out.println(sipMessage.toStringMessage());
+                	System.out.println("========== [END PROXY RECV] ==========\n");
                 }
 
 // Pasamos el mensaje a la capa de transacciones
