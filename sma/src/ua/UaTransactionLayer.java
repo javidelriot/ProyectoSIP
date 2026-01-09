@@ -39,7 +39,17 @@ public class UaTransactionLayer {
     private UaUserLayer userLayer;
     private UaTransportLayer transportLayer;
 
-    /**
+    
+    private boolean debug = false;
+
+    public void setDebug(boolean debug) {
+        this.debug = debug;
+        if (this.transportLayer != null) {
+            this.transportLayer.setDebug(debug);
+        }
+    }
+
+/**
      * Constructor. Crea la capa de transporte y guarda la referencia al user layer.
      */
     public UaTransactionLayer(int listenPort,
@@ -48,7 +58,10 @@ public class UaTransactionLayer {
                               UaUserLayer userLayer) throws SocketException {
         this.userLayer = userLayer;
         this.transportLayer = new UaTransportLayer(listenPort, proxyAddress, proxyPort, this);
-    }
+    
+        // Propaga el modo debug a la capa de transporte (para imprimir cabeceras completas)
+        this.transportLayer.setDebug(this.debug);
+}
 
     /**
      * Envía un REGISTER al proxy.

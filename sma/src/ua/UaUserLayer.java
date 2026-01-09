@@ -96,7 +96,9 @@ public class UaUserLayer {
                 proxyPort,
                 this
         );
-    }
+    
+        this.transactionLayer.setDebug(this.debug);
+}
 
     /**
      * Arranca el proceso de registro en el proxy.
@@ -380,7 +382,8 @@ public class UaUserLayer {
      * Llega 200 OK al INVITE (somos el llamante).
      */
     public void onInviteOKFromCallee(OKMessage ok) {
-        System.out.println("[UA] Llamada establecida (200 OK). ACK enviado.");
+        System.out.println("[UA] Llamada establecida (200 OK). ACK enviado. /n");
+        System.out.println("Para colgar la llamada ➜ BYE");
         state = IN_CALL;
 
         // Guardamos info de la llamada
@@ -389,7 +392,7 @@ public class UaUserLayer {
         currentRemoteContact  = ok.getContact();   // "IP:puerto" del otro UA
         currentRoute          = ok.getRecordRoute(); // null si no hay loose routing
         currentcSeqNumber     = ok.getcSeqNumber();
-        
+        /*
      // Arrancar vitextclient con la info SDP del 200 OK
         try {
             SDPMessage sdp = ok.getSdp();
@@ -400,7 +403,7 @@ public class UaUserLayer {
             }
         } catch (IOException e) {
             System.out.println("[UA] Error arrancando vitextclient: " + e.getMessage());
-        }
+        } */
     }
 
 
@@ -446,8 +449,8 @@ public class UaUserLayer {
      * Llega ACK cuando somos el llamado.
      */
     public void onAckReceived() {
-        System.out.println("[UA] ACK recibido → llamada establecida.");
-
+        System.out.println("[UA] ACK recibido → llamada establecida. /n");
+        System.out.println("Para colgar la llamada ➜ BYE");
         // Si hemos aceptado una llamada, usamos el INVITE entrante
         if (currentIncomingInvite != null) {
             currentCallId    = currentIncomingInvite.getCallId();
@@ -560,7 +563,7 @@ public class UaUserLayer {
         }
 
         // Arrancar vitextserver con la info SDP
-        runVitextServer(sdpMessage.getIp(), sdpMessage.getPort());
+       // runVitextServer(sdpMessage.getIp(), sdpMessage.getPort());
 
         String contact = myAddress + ":" + listenPort;
 

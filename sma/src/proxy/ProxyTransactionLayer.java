@@ -35,13 +35,26 @@ public class ProxyTransactionLayer {
     private ProxyUserLayer userLayer;
     private ProxyTransportLayer transportLayer;
     
-    public ProxyTransactionLayer(int listenPort,
+    
+    private boolean debug = false;
+
+    public void setDebug(boolean debug) {
+        this.debug = debug;
+        if (this.transportLayer != null) {
+            this.transportLayer.setDebug(debug);
+        }
+    }
+
+public ProxyTransactionLayer(int listenPort,
                                  ProxyUserLayer userLayer,
                                  boolean looseRouting) throws SocketException {
         this.userLayer     = userLayer;
         this.looseRouting  = looseRouting;
         this.transportLayer = new ProxyTransportLayer(listenPort, this);
-    }
+    
+        // Propaga el modo debug a la capa de transporte (para imprimir cabeceras completas)
+        this.transportLayer.setDebug(this.debug);
+}
 
     /**
      * Punto central de entrada de TODOS los mensajes que llegan al proxy.

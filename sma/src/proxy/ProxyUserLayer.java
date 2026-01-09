@@ -42,7 +42,8 @@ public class ProxyUserLayer {
 
 
     private final boolean looseRouting;
-    private String proxyIp;
+        private boolean debug = false;
+private String proxyIp;
     private int proxyPort;
 
 
@@ -58,14 +59,21 @@ public class ProxyUserLayer {
 
     public ProxyUserLayer(int listenPort, boolean looseRouting, Map<String, String> servletByUserUri )
             throws SocketException, UnknownHostException {
+        this(listenPort, looseRouting, false, servletByUserUri);
+    }
 
-    	this.servletByUserUri = (servletByUserUri != null) ? servletByUserUri : new HashMap<>();
+    public ProxyUserLayer(int listenPort, boolean looseRouting, boolean debug, Map<String, String> servletByUserUri )
+            throws SocketException, UnknownHostException {
+        this.debug = debug;
+this.servletByUserUri = (servletByUserUri != null) ? servletByUserUri : new HashMap<>();
     	this.looseRouting = looseRouting;
         this.proxyPort    = listenPort;
         this.proxyIp      = FindMyIPv4.findMyIPv4Address().getHostAddress();
 
         this.transactionLayer = new ProxyTransactionLayer(listenPort, this, looseRouting);
-    }
+    
+        this.transactionLayer.setDebug(this.debug);
+}
 
     // ===================== INVITE / RUTA PRINCIPAL =====================
 
@@ -459,4 +467,12 @@ public class ProxyUserLayer {
     public void startListening() {
         transactionLayer.startListening();
     }
+
+    public void setDebug(boolean debug) {
+        this.debug = debug;
+        if (this.transactionLayer != null) {
+            this.transactionLayer.setDebug(debug);
+        }
+    }
+
 }

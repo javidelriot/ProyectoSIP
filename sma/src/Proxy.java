@@ -23,7 +23,7 @@ public class Proxy {
 
         int listenPort      = Integer.parseInt(args[0]);
         boolean looseRouting = Boolean.parseBoolean(args[1]);
-        boolean debug        = Boolean.parseBoolean(args[2]); // ahora mismo no lo usamos
+        boolean debug        = Boolean.parseBoolean(args[2]); // activa logs completos de SIP si es true
 
         System.out.println("Proxy launching with args: " +
                 listenPort + ", " + looseRouting + ", " + debug);
@@ -53,7 +53,7 @@ public class Proxy {
             }
         }
         
-        ProxyUserLayer userLayer = new ProxyUserLayer(listenPort, looseRouting, servletByUserUri);
-        userLayer.startListening();
+        ProxyUserLayer userLayer = new ProxyUserLayer(listenPort, looseRouting, debug, servletByUserUri);
+userLayer.startListening();
     }
 }

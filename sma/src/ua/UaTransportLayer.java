@@ -23,7 +23,15 @@ public class UaTransportLayer {
     private DatagramSocket socket;
     private UaTransactionLayer transactionLayer;
 
-    /**
+    
+
+    /** Activar logs completos de SIP (cabeceras). */
+    private boolean debug = false;
+
+    public void setDebug(boolean debug) {
+        this.debug = debug;
+    }
+/**
      * Constructor.
      * Crea el socket UDP en el puerto indicado y guarda la info del proxy.
      */
@@ -43,8 +51,8 @@ public class UaTransportLayer {
      * Envía un mensaje SIP directamente al proxy usando la IP y puerto configurados.
      */
     public void sendToProxy(SIPMessage sipMessage) throws IOException {
-        byte[] data = sipMessage.toStringMessage().getBytes();
-        send(data, this.proxyAddress, this.proxyPort);
+        // Usamos send(SIPMessage,...) para que, si debug está activo, se imprima el mensaje completo.
+        send(sipMessage, this.proxyAddress, this.proxyPort);
     }
 
     /**
@@ -52,6 +60,11 @@ public class UaTransportLayer {
      * (Por si en algún momento se quiere enviar a otro UA).
      */
     public void send(SIPMessage sipMessage, String address, int port) throws IOException {
+        if (debug) {
+            System.out.println("========== [UA SEND] -> " + address + ":" + port + " ==========");
+            System.out.println(sipMessage.toStringMessage());
+            System.out.println("========== [END UA SEND] ==========");
+        }
         byte[] data = sipMessage.toStringMessage().getBytes();
         send(data, address, port);
     }
@@ -85,7 +98,16 @@ public class UaTransportLayer {
 
                 SIPMessage sipMessage = SIPMessage.parseMessage(msg);
 
-                // Pasamos el mensaje a la capa de transacciones
+                
+                if (debug) {
+                    String sourceIp = packet.getAddress().getHostAddress();
+                    int sourcePort = packet.getPort();
+                    System.out.println("\n========== [UA RECV] <- \" + sourceIp + \":\" + sourcePort + \" ==========");
+                    System.out.println(sipMessage.toStringMessage());
+                    System.out.println("========== [END UA RECV] ==========");
+                }
+
+// Pasamos el mensaje a la capa de transacciones
                 transactionLayer.onMessageReceived(sipMessage);
 
             } catch (Exception e) {

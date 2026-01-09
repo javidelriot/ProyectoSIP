@@ -21,7 +21,14 @@ public class ProxyTransportLayer {
     private DatagramSocket socket;
     private ProxyTransactionLayer transactionLayer;
 
-    /**
+    
+    /** Activar logs completos de SIP (cabeceras). */
+    private boolean debug = false;
+
+    public void setDebug(boolean debug) {
+        this.debug = debug;
+    }
+/**
      * Crea el socket UDP y lo deja escuchando en el puerto indicado.
      */
     public ProxyTransportLayer(int listenPort, ProxyTransactionLayer transactionLayer) throws SocketException {
@@ -34,6 +41,11 @@ public class ProxyTransportLayer {
      * Envía un mensaje SIP a la dirección y puerto indicados.
      */
     public void send(SIPMessage sipMessage, String address, int port) throws IOException {
+        if (debug) {
+            System.out.println("========== [PROXY SEND] -> " + address + ":" + port + " ==========");
+            System.out.println(sipMessage.toStringMessage());
+            System.out.println("========== [END PROXY SEND] ==========");
+        }
         byte[] bytes = sipMessage.toStringMessage().getBytes();
         sendSocket(bytes, address, port);
     }
@@ -70,7 +82,14 @@ public class ProxyTransportLayer {
                 String sourceIp = packet.getAddress().getHostAddress();
                 int sourcePort = packet.getPort();
 
-                // Pasamos el mensaje a la capa de transacciones
+                
+                if (debug) {
+                    System.out.println("\n========== [PROXY RECV] <- \" + sourceIp + \":\" + sourcePort + \" ==========");
+                    System.out.println(sipMessage.toStringMessage());
+                    System.out.println("========== [END PROXY RECV] ==========");
+                }
+
+// Pasamos el mensaje a la capa de transacciones
                 transactionLayer.onMessageReceived(sipMessage, sourceIp, sourcePort);
 
             } catch (Exception e) {
